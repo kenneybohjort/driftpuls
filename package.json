@@ -1,0 +1,13 @@
+{
+  "name": "storningsgenerator",
+  "version": "1.0.0",
+  "description": "Driftpuls — Driftledning, larminkorg, publik driftportal och NIS2-rapportering för stadsnät och fjärrvärme",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== TEMAN: ändra färgerna här. Format: röd grön blå (0-255) ===== */
+@layer base {
+  :root { color-scheme: light; --c-page: 248 250 252; --c-card: 255 255 255; --c-inset: 255 255 255; --c-line: 226 232 240; --c-line-strong: 203 213 225; --c-soft: 226 232 240; --c-soft-hover: 203 213 225; --c-fg: 15 23 42; --c-fg2: 51 65 85; --c-muted: 71 85 105; --c-faint: 100 116 139; --c-accent: 79 99 18; --c-danger: 220 38 38; --c-info: 2 132 199; }
+  :root.dark { color-scheme: dark; --c-page: 2 6 23; --c-card: 15 23 42; --c-inset: 2 6 23; --c-line: 30 41 59; --c-line-strong: 51 65 85; --c-soft: 30 41 59; --c-soft-hover: 51 65 85; --c-fg: 241 245 249; --c-fg2: 203 213 225; --c-muted: 148 163 184; --c-faint: 100 116 139; --c-accent: 130 163 32; --c-danger: 248 113 113; --c-info: 56 189 248; }
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light) { color-scheme: dark; --c-page: 2 6 23; --c-card: 15 23 42; --c-inset: 2 6 23; --c-line: 30 41 59; --c-line-strong: 51 65 85; --c-soft: 30 41 59; --c-soft-hover: 51 65 85; --c-fg: 241 245 249; --c-fg2: 203 213 225; --c-muted: 148 163 184; --c-faint: 100 116 139; --c-accent: 130 163 32; --c-danger: 248 113 113; --c-info: 56 189 248; }
+  }
+}
+
+dialog::backdrop { background: rgb(var(--c-page) / 0.8); }
+
+@layer components {
+  .card { @apply bg-card/60 border border-line/80 rounded-2xl p-6 shadow-xl; }
+  .lbl { @apply block text-xs font-medium text-muted mb-1.5; }
+  .field { @apply w-full bg-inset border border-line rounded-xl px-3.5 py-2.5 text-sm text-fg placeholder:text-faint focus:outline-none focus:border-brand transition; }
+  .field[aria-invalid="true"] { @apply border-red-500; }
+  .chk { @apply flex items-center gap-2.5 bg-inset border border-line p-2.5 rounded-xl cursor-pointer hover:border-line-strong transition text-xs; }
+  .btn { @apply bg-soft hover:bg-soft-hover text-fg px-3.5 py-1.5 rounded-lg text-xs font-medium transition; }
+  .btn-danger { @apply bg-red-500/10 hover:bg-red-500/20 text-danger border border-red-500/20 px-3.5 py-1.5 rounded-lg text-xs font-medium transition; }
+  .tab { @apply bg-inset text-muted hover:text-fg border border-line px-3.5 py-1.5 rounded-xl text-xs font-medium transition whitespace-nowrap; }
+  .tab[aria-selected="true"] { @apply bg-brand/20 text-accent border-brand/40; }
+  .out { @apply w-full flex-1 bg-inset border border-line rounded-xl p-4 font-mono text-xs text-fg2 resize-none focus:outline-none; }
+  .doc h3 { @apply text-sm font-bold text-accent uppercase tracking-wider mb-1.5; }
+  .doc ol { @apply list-decimal list-inside space-y-1; }
+  .doc ul { @apply list-disc list-inside space-y-1; }
+  .doc code { @apply font-mono bg-inset border border-line rounded px-1; }
+  .doc pre { @apply font-mono bg-inset border border-line rounded-lg p-3 overflow-x-auto whitespace-pre; }
+}

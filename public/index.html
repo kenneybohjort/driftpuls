@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>Driftpuls</title>
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/assets/tailwind.css">
+</head>
+<body class="bg-page text-fg min-h-screen flex flex-col font-sans selection:bg-brand selection:text-white">
+
+  <header class="bg-card/80 backdrop-blur-md border-b border-line px-6 py-4 sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto flex flex-wrap gap-3 justify-between items-center">
+      <div class="flex items-center gap-2.5">
+        <span class="inline-block w-3 h-3 bg-brand animate-pulse rounded-full"></span>
+        <h1 class="text-base font-bold tracking-tight text-fg">Driftpuls</h1>
+      </div>
+      <div class="flex flex-wrap items-center gap-3">
+        <div id="portalStatus" class="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-line bg-inset text-xs transition select-none cursor-help" title="Kontrollerar driftportal...">
+          <span id="portalDot" class="w-2 h-2 rounded-full bg-slate-400"></span>
+          <span id="portalText" class="text-muted font-medium">Portal: Kontrollerar...</span>
+        </div>
+        <button data-action="openSettings" class="btn">⚙️ Integrationer</button>
+        <button data-action="toggleModal" class="btn text-accent">📖 Lathund</button>
+        <button id="themeBtn" data-action="theme" class="btn">🌓 Auto</button>
+        <button data-action="logout" class="btn">Logga ut <span id="who" class="text-faint"></span></button>
+        <a id="publicLink" href="/drift/" target="_blank" rel="noopener" class="btn">Visa publik driftportal &nearr;</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+    <!-- Formulär -->
+    <section class="card lg:col-span-5 space-y-4 self-start">
+      <div class="flex items-center justify-between border-b border-line pb-3">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-fg2" id="formTitle"></h2>
+        <button data-action="resetForm" class="text-xs text-faint hover:text-fg2 transition">Rensa / Ny</button>
+      </div>
+      <input type="hidden" id="editId" value="">
+      <input type="hidden" id="alertId" value="">
+      <div id="alertLinkBanner" class="hidden p-2.5 rounded-xl bg-brand/10 border border-brand/30 text-xs flex items-center justify-between gap-2">
+        <span id="alertLinkText" class="text-accent font-medium truncate">📡 Kopplat till FrameFlow-larm</span>
+        <button data-action="unlinkAlert" class="text-[11px] text-muted hover:text-fg underline shrink-0">Koppla loss</button>
+      </div>
+
+      <div>
+        <label class="lbl" for="domain">Verksamhet</label>
+        <select id="domain" class="field">
+          <option value="stadsnat">Stadsnät (bredband, TV)</option>
+          <option value="fjarrvarme">Fjärrvärme</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="lbl" for="statusType">Rapportstatus</label>
+        <select id="statusType" class="field">
+          <option>Pågående Störning</option>
+          <option>Uppdaterad Prognos / Info</option>
+          <option>Åtgärdat (klarrapport)</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="lbl" for="area">Område / Nod / Gata</label>
+        <input type="text" id="area" list="nodeList" maxlength="80" placeholder="t.ex. Arbrå, Bollnäs C" class="field">
+        <datalist id="nodeList"></datalist>
+      </div>
+
+      <div>
+        <label class="lbl" for="faultType">Typ av händelse</label>
+        <select id="faultType" class="field"></select>
+      </div>
+
+      <div>
+        <span class="lbl">Påverkade tjänster</span>
+        <div id="serviceBox" class="grid grid-cols-2 gap-2"></div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="lbl" for="startDate">Startdatum</label>
+          <input type="date" id="startDate" class="field font-mono">
+        </div>
+        <div>
+          <label class="lbl" for="startTime">Starttid (t.ex. 0800)</label>
+          <input type="text" id="startTime" maxlength="5" inputmode="numeric" placeholder="12:00" class="field font-mono">
+        </div>
+        <div>
+          <label class="lbl" for="ettrDate">Klartid, datum (valfritt)</label>
+          <input type="date" id="ettrDate" class="field font-mono">
+        </div>
+        <div>
+          <label class="lbl" for="ettr">Beräknad klartid (t.ex. 1600)</label>
+          <input type="text" id="ettr" maxlength="15" placeholder="16:00 eller Ej fastställt" class="field font-mono">
+        </div>
+      </div>
+
+      <div>
+        <label class="lbl" for="techDetails">Lägesrapport (visas publikt på portalen)</label>
+        <textarea id="techDetails" rows="3" maxlength="1000" placeholder="Ex: Tekniker är på plats. Skriv inget internt – texten är publik." class="field resize-none"></textarea>
+        <details id="publicTimelineHint" class="hidden mt-2 bg-inset border border-line rounded-xl px-3 py-2 text-[11px] text-fg2">
+          <summary id="publicTimelineSummary" class="cursor-pointer select-none font-semibold text-accent">🕒 Publik tidslinje på portalen</summary>
+          <ul id="publicTimelineList" class="mt-2 space-y-1.5 border-l-2 border-line pl-2.5 text-[11px]"></ul>
+        </details>
+      </div>
+
+      <div>
+        <label class="lbl" for="note">Intern anteckning till historiken (visas inte publikt)</label>
+        <textarea id="note" rows="2" maxlength="500" placeholder="Ex: Ny prognos efter besök av tekniker." class="field resize-none"></textarea>
+      </div>
+
+      <button id="publishBtn" data-action="publish" class="w-full bg-brand hover:bg-brand-dark disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-brand/20 text-sm">
+        🚀 Publicera / Spara <span class="text-white/60 text-xs font-normal ml-1">Ctrl+Enter</span>
+      </button>
+    </section>
+
+    <!-- Aktiva ärenden + mallar -->
+    <section class="lg:col-span-7 space-y-6 flex flex-col">
+      <div id="alertsCard" class="card !p-5 border-l-4 border-l-brand">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <div class="flex items-center gap-2">
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-fg2">📡 FrameFlow Larminkorg (Ej publicerade)</h2>
+            <span id="alertsBadge" class="hidden text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-red-500/20 text-danger border border-red-500/30 animate-pulse">0</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button data-action="simulateAlert" data-arg="switch" class="text-[11px] text-accent hover:underline font-medium" title="Skapa ett testlarm för switch i inkorgen">+ Testlarm</button>
+            <button id="dismissAllAlertsBtn" data-action="dismissAlert" data-arg="all" class="hidden text-[11px] text-faint hover:text-danger transition">Rensa alla</button>
+            <button data-action="openSettings" class="text-[11px] text-faint hover:text-fg2 transition">⚙️ Inställningar</button>
+          </div>
+        </div>
+        <div id="alertsList" class="space-y-2 max-h-56 overflow-y-auto">
+          <p class="text-xs text-faint italic">Inga nya hårdvarularm från FrameFlow.</p>
+        </div>
+      </div>
+
+      <div class="card !p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-xs font-semibold uppercase tracking-wider text-fg2">Aktiva ärenden på driftportalen</h2>
+          <a id="statusJsonLink" href="/status.json" target="_blank" rel="noopener" class="text-[10px] text-faint hover:text-accent font-mono transition" title="Öppna maskinläsbart statusflöde">status.json ↗</a>
+        </div>
+        <div id="overduePlannedAlert" class="hidden mb-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <span class="text-base">⚠️</span>
+            <span id="overduePlannedText">Planerat arbete har passerat sin sluttid och döljs publikt.</span>
+          </div>
+          <button data-action="closeFirstOverdue" class="btn bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold text-xs whitespace-nowrap">Stäng &amp; arkivera</button>
+        </div>
+        <div id="activeIncidentsList" class="space-y-2 max-h-56 overflow-y-auto">
+          <p class="text-xs text-faint">Laddar aktiva ärenden...</p>
+        </div>
+      </div>
+
+      <details id="archiveBox" class="card !p-5">
+        <summary class="text-xs font-semibold uppercase tracking-wider text-fg2 cursor-pointer select-none">Stängda ärenden (arkiv) <span id="archiveCount" class="normal-case font-normal text-faint"></span></summary>
+        <div class="mt-3 mb-2">
+          <input type="search" id="archiveSearch" placeholder="🔍 Sök i arkivet (område, feltyp, datum, stängt av...)" class="field text-xs">
+        </div>
+        <div id="archiveList" class="space-y-2 mt-2 max-h-96 overflow-y-auto"></div>
+      </details>
+
+      <div class="card flex-1 flex flex-col">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-fg2 border-b border-line pb-3 mb-4">Genererade kanaler</h2>
+        <div id="tabBar" role="tablist" class="flex gap-2 border-b border-line pb-3 mb-4 overflow-x-auto"></div>
+        <div id="panels" class="flex-1 flex flex-col min-h-[200px]"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="text-center text-[10px] text-faint pb-4 px-4"><span id="ver"></span></footer>
+
+  <!-- Lathund -->
+  <div id="docModal" class="fixed inset-0 bg-page/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+    <div class="bg-card border border-line rounded-2xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl">
+      <div class="px-6 py-4 border-b border-line flex justify-between items-center">
+        <h2 class="text-base font-bold text-fg">📖 Lathund &amp; Driftmanual</h2>
+        <button data-action="toggleModal" class="text-muted hover:text-fg text-xl font-bold" aria-label="Stäng">&times;</button>
+      </div>
+      <div class="px-6 pt-4 flex gap-2">
+        <button data-action="doc" data-arg="tech" class="tab">För tekniker</button>
+        <button data-action="doc" data-arg="admin" class="tab">För administratör</button>
+      </div>
+      <div class="doc p-6 overflow-y-auto text-xs text-fg2 leading-relaxed">
+        <div id="doc-tech" class="space-y-5">
+          <div><h3>1. Logga in</h3>
+            <p>Öppna adressen du fått av din administratör och skriv användarnamn och lösenord. Har du glömt lösenordet, be administratören sätta ett nytt. Efter fem felaktiga försök spärras inloggningen i 15 minuter. Logga ut med knappen högst upp till höger. Knappen <strong>Auto/Ljust/Mörkt</strong> byter färgtema.</p></div>
+          <div><h3>2. Skapa ett nytt ärende</h3>
+            <ol>
+              <li>Välj <strong>Verksamhet</strong>: Stadsnät eller Fjärrvärme. Typer av händelse och tjänster ändras efter valet.</li>
+              <li><strong>Rapportstatus</strong>: lämna på <em>Pågående Störning</em> (eller <em>Planerat underhåll/arbete</em> under Typ av händelse).</li>
+              <li><strong>Område</strong>: skriv orten, noden eller gatan, t.ex. <code>Arbrå</code> eller <code>Storgatan, Bollnäs</code>.</li>
+              <li><strong>Typ av händelse</strong> och <strong>Påverkade tjänster</strong>: välj i listan och bocka i det som drabbats.</li>
+              <li><strong>Startdatum och starttid</strong>: datumet är förifyllt med idag. Skriv tiden som fyra siffror, <code>0815</code> blir <code>08:15</code>. Röda fält är ogiltiga.</li>
+              <li><strong>Beräknad klartid</strong>: skriv tid på samma sätt, eller <code>Ej fastställt</code> om ni inte vet. Går felet över midnatt fyller du även i <strong>Klartid, datum</strong>.</li>
+              <li><strong>Lägesrapport</strong>: kort text om läget. <strong>Den visas publikt</strong>, så skriv inga kundnamn, nummer eller interna detaljer.</li>
+              <li><strong>Intern anteckning</strong> (valfri): sparas bara i ärendets historik och visas aldrig publikt. Skriv gärna varför du ändrar något.</li>
+              <li>Till höger skapas färdiga texter i flikarna <em>SMS, Driftportal, Sociala medier, Intern rapport</em>. Kopiera med knappen under texten och skicka själv i respektive kanal. SMS ska hålla sig under 160 tecken (räknaren blir röd annars).</li>
+              <li>Klicka <strong>Publicera / Spara</strong> (eller <code>Ctrl+Enter</code>). Ärendet syns på driftportalen inom en minut och visas i listan <em>Aktiva ärenden</em>. Publicering skickar <u>inte</u> SMS eller inlägg, det gör du själv med de kopierade texterna.</li>
+            </ol></div>
+          <div><h3>3. Ändra eller uppdatera ett ärende</h3>
+            <ol>
+              <li>Hitta ärendet under <em>Aktiva ärenden</em> och klicka <strong>Redigera</strong>. Formuläret fylls i.</li>
+              <li>Ändra det som behövs, t.ex. ny klartid. Välj Rapportstatus <em>Uppdaterad Prognos / Info</em> om läget har ändrats.</li>
+              <li>Kopiera de nya texterna och skicka ut dem. Klicka sedan <strong>Publicera / Spara</strong> för att ersätta ärendet på portalen. Det skapas inget nytt ärende.</li>
+            </ol></div>
+          <div><h3>4. Klarrapportera &amp; Incidentrapport (Cybersäkerhetslagen / NIS2)</h3>
+            <ol>
+              <li>Klicka <strong>Redigera</strong> på ärendet under <em>Aktiva ärenden</em>.</li>
+              <li>Välj Rapportstatus <strong>Åtgärdat (klarrapport)</strong>. Kopiera och skicka ut klarrapporten i samma kanaler som störningen.</li>
+              <li>Klicka <strong>Stäng ärende</strong> i listan. Fyll i:
+                <ul class="mt-1 space-y-0.5">
+                  <li><strong>Faktiskt slutdatum och sluttid:</strong> Ange exakt klockslag då felet avhjälptes och drift återställdes.</li>
+                  <li><strong>Orsak och åtgärd:</strong> Skriv en saklig sammanfattning av vad som orsakade felet och hur det avhjälptes (t.ex. <em>"Avgrävd 96-fiber vid schaktarbete på Storgatan. Omskarvad av tekniker och verifierad mot nod Arbrå"</em>). Denna text ingår direkt i den officiella rapporten.</li>
+                </ul>
+              </li>
+              <li>När ärendet bekräftas stängt genereras automatiskt en fullständig <strong>Incidentrapport enligt Cybersäkerhetslagen (NIS2)</strong> i ett popup-fönster.</li>
+              <li><strong>Kopiera eller ladda ner rapporten:</strong> Använd <strong>📋 Kopiera rapport</strong> eller <strong>💾 Ladda ner (.md)</strong> för att bifoga till ärendesystem, driftledning eller tillsynsmyndighet.</li>
+              <li><strong>Rapporter i efterhand:</strong> Alla stängda ärenden har en knapp <strong>📄 Rapport</strong> under <em>Stängda ärenden</em>, så du kan när som helst öppna och ladda ner rapporten igen.</li>
+            </ol>
+            <div class="mt-2 p-3 bg-inset rounded-xl border border-line text-[11px] space-y-1">
+              <strong class="text-accent block">Lagstadgade tidsfrister vid betydande incidenter:</strong>
+              <p>Om incidenten bedöms som allvarlig/betydande gäller enligt lag:</p>
+              <ul class="list-disc list-inside">
+                <li><strong>Inom 24 timmar från kännedom:</strong> Tidig varning till tillsynsmyndigheten (PTS för Stadsnät, Energimyndigheten för Fjärrvärme) och CERT-SE.</li>
+                <li><strong>Inom 72 timmar från kännedom:</strong> Incidentanmälan med fördjupad läges- och konsekvensbedömning.</li>
+                <li><strong>Senast 1 månad efter avhjälpande:</strong> Slutrapport med grundorsak och förebyggande åtgärder.</li>
+              </ul>
+              <p class="text-faint">Rapporten räknar automatiskt fram dessa datum och tidsfrister baserat på när felet startade och registrerades.</p>
+            </div>
+          </div>
+          <div><h3>5. Larminkorg från FrameFlow (SNMP / Hårdvara)</h3>
+            <ol>
+              <li>När en övervakad switch, nod eller UPS larmar i FrameFlow dyker larmet upp i <strong>📡 FrameFlow Larminkorg</strong> högst upp till höger (detta syns <u>enbart i Admin</u>, aldrig på den publika driftportalen).</li>
+              <li>Systemet matchar automatiskt enhetens namn (t.ex. <code>arbra-nod01-sw1</code>) mot nodregistret och väljer rätt område, verksamhet och händelsetyp (t.ex. <em>Hårdvarufel / Access-switch</em> eller <em>Strömavbrott i nodhus</em>).</li>
+              <li>Klicka <strong>Använd i formulär</strong> på larmet för att fylla i ärendeformuläret. Komplettera vid behov med beräknad klartid/lägesrapport och klicka <strong>Publicera / Spara</strong>.</li>
+              <li>När enheten går upp igen i FrameFlow markeras det aktiva ärendet med en grön badge <strong>✅ Återställd i FrameFlow</strong> i Admin så att du ser att det är klart att stängas.</li>
+            </ol></div>
+          <div><h3>6. Planerat arbete i förväg</h3>
+            <ol>
+              <li>Välj typ <em>Planerat underhåll</em> (stadsnät) eller <em>Planerat arbete / avstängning</em> (fjärrvärme). Fältens rubriker ändras till planerad start och planerat slut.</li>
+              <li>Fyll i start (datum och tid) och slut (datum och tid). Datum i framtiden är tillåtet.</li>
+              <li>Publicera. Arbetet visas under <em>Planerade arbeten</em> på portalen som <em>Kommande</em>, och byter till <em>Pågår nu</em> när starttiden är nådd. Efter planerat slut döljs det automatiskt, men stäng ärendet i listan så att det hamnar i arkivet.</li>
+            </ol></div>
+          <div><h3>7. Tips och vanliga problem</h3>
+            <ul>
+              <li><strong>Historik:</strong> klicka <em>Historik</em> på ett ärende för att se vem som ändrat vad och när. Stängda ärenden finns under <em>Stängda ärenden</em>.</li>
+              <li>Det du skriver sparas som utkast i webbläsaren om du råkar stänga fliken. <strong>Rensa / Ny</strong> tömmer formuläret.</li>
+              <li>"Ange område / nod": fältet Område är tomt. "Kontrollera tidsfälten": rätta det röda fältet till HH:MM.</li>
+              <li>Ser sidan konstig eller gammal ut: tryck <code>Ctrl+F5</code>.</li>
+              <li>Sidan loggar ut dig efter 12 timmar utan aktivitet. Det du skrivit finns kvar som utkast.</li>
+              <li>Sidan fungerar inte alls eller du kan inte logga in trots rätt lösenord: kontakta administratören.</li>
+            </ul></div>
+        </div>
+        <div id="doc-admin" class="space-y-5 hidden">
+          <div><h3>FrameFlow-integration, Notiser &amp; Nodregister (⚙️ Integrationer)</h3>
+            <ul>
+              <li>Klicka på <strong>⚙️ Integrationer</strong> i toppmenyn för att konfigurera <strong>FrameFlow (Pull &amp; Push)</strong>, <strong>Utgående larmnotiser</strong>, <strong>Noder &amp; Områden</strong>, <strong>Användare &amp; Lösenord</strong> samt <strong>Backup &amp; Uppdatering</strong> direkt i webbläsaren.</li>
+              <li><strong>Webhook (Push):</strong> Kopiera <em>Webhook-URL</em>, <em>Bearer-token</em> och <em>JSON-mallen</em> och skicka till er FrameFlow-leverantör (läggs in som en HTTP Notification Action i FrameFlow). Endpointen är skyddad med rate-limiting och brute-force-spärr.</li>
+              <li><strong>API-polling (Pull):</strong> Om er leverantör exponerar FrameFlows REST API kan ni även slå på automatisk utgående API-polling och testa anslutningen med ett klick.</li>
+              <li><strong>Utgående larmnotis (Teams / Slack / Discord):</strong> Lägg in en inkommande Webhook-URL från t.ex. Microsoft Teams eller Slack för att få realtidsnotiser till jourkanalen när FrameFlow larmar eller ett ärende publiceras.</li>
+              <li><strong>Nodregister:</strong> Under fliken <em>Noder &amp; Områden</em> kopplar ni enhetsnamn/prefix (t.ex. <code>arbra</code>, <code>bol-c</code>) till områdesnamn, uppskattat antal kunder och samhällsviktig funktion (används automatiskt i NIS2-rapporten vid stängning).</li>
+              <li>Inställningarna sparas i <code>data/settings.json</code> (med filrättigheter <code>0600</code>) och larm i <code>data/alerts.json</code>.</li>
+            </ul></div>
+          <div><h3>Uppdatering (CVE / Node.js) &amp; Kommandon via SSH</h3>
+<pre>cd /sökväg/till/storningsgenerator
+./update.sh                               # komplett CVE-, säkerhets- och bas-image-uppdatering (tar backup först!)
+./update.sh --audit-fix                   # uppdaterar även npm-paket vid CVE i beroenden
+./backup.sh                               # skapar portabel tar.gz-backup i ./backups/
+npm test                                  # kör automatiska självtester
+docker compose ps                         # körs containrarna? ska stå (healthy)
+docker logs --tail 50 drift-admin         # senaste loggen från admin
+docker logs --tail 50 drift-portal        # senaste loggen från publika portalen
+./deploy.sh                               # bygg om och starta (efter ändrade filer)</pre>
+            <p class="mt-2">Appen startar själv efter omstart av servern. Port <code>3000</code> (admin) och <code>3001</code> (publik portal) nås direkt via serverns lokala IP-adress eller bakom valfri reverse-proxy.</p></div>
+          <div><h3>Användare och lösenord (Webb-GUI &amp; CLI)</h3>
+            <p>Du kan hantera konton och byta lösenord direkt i gränssnittet under <strong>⚙️ Integrationer &rarr; 👤 Användare &amp; Lösenord</strong>, eller via kommandoraden:</p>
+<pre>docker exec -it drift-admin node users.js list
+docker exec -it drift-admin node users.js add anna
+docker exec -it drift-admin node users.js passwd anna
+docker exec -it drift-admin node users.js remove anna</pre>
+            <ul class="mt-2">
+              <li>Ett konto per person, aldrig delade konton. Lösenord minst 12 tecken, gärna en lång mening.</li>
+              <li>Nytt lösenord på annat konto eller borttagen användare loggar ut personen direkt. Konton och lösenordshashar (scrypt) ligger i <code>data/users.json</code>, aldrig i klartext. Det sista kontot kan inte raderas.</li>
+              <li>Låst efter fem fel? Spärren släpper efter 15 minuter, eller starta om containern.</li>
+              <li>Första kontot skapas från <code>ADMIN_USER</code>/<code>ADMIN_PASS</code> i <code>.env</code> när inga användare finns. Därefter kan raderna tas bort.</li>
+            </ul></div>
+          <div><h3>Ändra utseendet</h3>
+            <ul>
+              <li>Varumärkesfärger och temafärger (ljust/mörkt): <code>tailwind.config.js</code> och <code>src/input.css</code> (variablerna <code>--c-…</code>).</li>
+              <li>Knappar, fält och kort: <code>src/input.css</code>. Admins layout och texter: <code>public/index.html</code> och <code>public/admin.js</code>. Inloggningssidan: <code>public/login.html</code>. Publika portalen: <code>server.js</code> (funktionen <code>renderPortal</code>).</li>
+              <li>Efter ändring: <code>./build-css.sh</code> (bara om du använt nya klasser), sedan <code>./deploy.sh</code>, sedan <code>Ctrl+F5</code> i webbläsaren.</li>
+              <li>Inga <code>style="…"</code>, inga externa typsnitt eller bilder (säkerhetspolicyn blockerar det). Lägg egna filer i <code>public/assets/</code>.</li>
+            </ul></div>
+          <div><h3>Lägga till typer, tjänster eller verksamheter</h3>
+            <p>Listorna finns överst i <code>public/admin.js</code> i objektet <code>DOMAINS</code> (typ av händelse, tjänster, standardval och om en typ är planerat arbete). Ny verksamhet kräver även en rad i <code>DOMAINS</code> och <code>DOMAIN_LABEL</code> i <code>server.js</code> samt ett alternativ i <code>public/index.html</code>. Kör <code>./deploy.sh</code> efteråt.</p></div>
+          <div><h3>Incidentrapporter enligt Cybersäkerhetslagen (NIS2)</h3>
+            <ul>
+              <li><strong>Lagring:</strong> Varje stängt ärende genererar en rapportfil i <code>data/rapporter/incident-&lt;id&gt;.md</code>. Filerna lagras i öppen Markdown och inkluderas i säkerhetskopian.</li>
+              <li><strong>Tillsynsmyndigheter:</strong> Systemet sätter automatiskt <em>Post- och telestyrelsen (PTS)</em> för Stadsnät och <em>Statens energimyndighet</em> för Fjärrvärme, tillsammans med <em>MSB / CERT-SE</em>.</li>
+              <li><strong>Avsnitt 5 (Kompletterande uppgifter):</strong> Förifylls direkt i stängningsdialogen med kundantal och samhällsviktiga funktioner från nodregistret samt orsaksklassificering.</li>
+              <li><strong>API-åtkomst:</strong> Inloggade administratörer kan även hämta rapporten programmatiskt via <code>GET /api/report/:id</code>.</li>
+            </ul></div>
+          <div><h3>Data, loggrotation och säkerhetskopia</h3>
+            <ul>
+              <li><code>data/storingar.json</code> aktiva ärenden. <code>data/arkiv.jsonl</code> stängda ärenden med hela historiken. <code>data/rapporter/</code> sparade incidentrapporter. <code>data/settings.json</code> integrationer och nodregister. <code>data/alerts.json</code> larminkorg. <code>data/users.json</code> användare. <code>data/audit.jsonl</code> revisionslogg (roteras automatiskt vid 5 MB till <code>.1</code>, <code>.2</code>, <code>.3</code>).</li>
+              <li><strong>Snabbexport i webbläsaren:</strong> Öppna <strong>⚙️ Integrationer &rarr; 💾 Backup &amp; Uppdatering</strong> och klicka <em>Ladda ner säkerhetskopia (.json)</em>.</li>
+              <li><strong>Serverbackup:</strong> Kör <code>./backup.sh</code> (eller lägg i cron) för att skapa <code>backups/drift-backup-YYYY-MM-DD.tar.gz</code> med 30 dagars historik.</li>
+              <li>Återställ: stoppa appen, packa upp kopian i <code>data/</code>, starta appen.</li>
+              <li>Vem som gjort vad: <code>docker logs drift-admin | grep '"action"'</code> eller läs <code>data/audit.jsonl</code>.</li>
+            </ul></div>
+          <div><h3>Felsökning</h3>
+            <ul>
+              <li>Portalen visar 502 eller "Bad Gateway": appen ligger nere. Kör <code>docker ps</code> och <code>docker logs</code>, därefter <code>./deploy.sh</code>.</li>
+              <li>Admin ger 403 eller når inte fram: admin är bara tillgänglig från interna nätet (spärr i Traefik).</li>
+              <li>Ärenden går inte att spara: kontrollera att <code>data/</code> ägs av användare 1000 (<code>sudo chown -R 1000:1000 data</code>).</li>
+              <li>Sidans version visas längst ned (<em>Server</em> och <em>Sida</em>). Om de skiljer sig, eller sidan beter sig som en gammal version: kör <code>./deploy.sh</code> och tryck <code>Ctrl+F5</code>. Kontrollera att filerna ligger i rätt mappar (<code>public/</code> för sidfilerna).</li>
+              <li>Uppdatera programvaran &amp; CVE-patcha: kör <code>./update.sh</code>. Kör <code>sudo apt update &amp;&amp; sudo apt upgrade</code> på servern en gång i månaden.</li>
+            </ul></div>
+        </div>
+      </div>
+      <div class="px-6 py-3 border-t border-line flex justify-end">
+        <button data-action="toggleModal" class="btn !px-4 !py-2">Stäng manual</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stäng ärende + NIS2-klassificering -->
+  <dialog id="closeDlg" class="bg-card text-fg border border-line rounded-2xl p-6 w-full max-w-xl shadow-2xl">
+    <h2 class="text-base font-bold text-fg">Stäng ärende &amp; generera NIS2-rapport</h2>
+    <p id="closeTitle" class="text-xs text-muted mb-4"></p>
+    <div class="space-y-3 max-h-[75vh] overflow-y-auto pr-1">
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="lbl" for="endDate">Faktiskt slutdatum</label>
+          <input type="date" id="endDate" class="field font-mono">
+        </div>
+        <div>
+          <label class="lbl" for="endTime">Faktisk sluttid</label>
+          <input type="text" id="endTime" maxlength="5" inputmode="numeric" placeholder="14:30" class="field font-mono">
+        </div>
+      </div>
+      <div>
+        <label class="lbl" for="closeNote">Fastställd orsak och vidtagna åtgärder (ingår i rapport &amp; historik)</label>
+        <textarea id="closeNote" rows="2" maxlength="500" placeholder="Ex: Utbytt SFP-modul i access-switch och verifierad länk." class="field resize-none"></textarea>
+      </div>
+
+      <div class="border-t border-line pt-3 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-accent uppercase tracking-wider">🛡️ NIS2-klassificering (Avsnitt 5 i rapporten)</span>
+          <span class="text-[10px] text-faint">Förifylls från nodregistret</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="lbl" for="nis2RootCause">Bakomliggande orsaksklassificering</label>
+            <select id="nis2RootCause" class="field text-xs">
+              <option value="tech">Tekniskt fel / Komponenthaveri</option>
+              <option value="thirdparty">Fysisk yttre åverkan / Grävskada</option>
+              <option value="power">Strömavbrott från överliggande elnät</option>
+              <option value="weather">Väder / Naturhändelse / Åska</option>
+              <option value="human">Mänsklig faktor / Konfigurationsfel</option>
+              <option value="cyber">Misstänkt cyberangrepp / Sabotage</option>
+              <option value="">Ej angiven / Planerat arbete</option>
+            </select>
+          </div>
+          <div>
+            <label class="lbl" for="nis2Significant">Tröskelvärde enligt NIS2</label>
+            <select id="nis2Significant" class="field text-xs">
+              <option value="no">Understiger tröskelvärde (Intern logg)</option>
+              <option value="yes">⚠️ BETYDANDE incident (Anmäls till myndighet)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="lbl" for="nis2Customers">Berörda abonnenter/kunder (ca st)</label>
+            <input type="number" id="nis2Customers" min="0" max="100000" placeholder="t.ex. 850" class="field font-mono text-xs">
+          </div>
+          <div>
+            <label class="lbl" for="nis2Percent">Andel av användarbas (%)</label>
+            <input type="text" id="nis2Percent" maxlength="10" placeholder="t.ex. 14" class="field font-mono text-xs">
+          </div>
+        </div>
+
+        <div>
+          <span class="lbl">Påverkan på samhällsviktiga funktioner</span>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs">
+            <label class="chk !p-2"><input type="checkbox" value="112" class="nis2-crit accent-brand"> Blåljus / 112 / Rakel</label>
+            <label class="chk !p-2"><input type="checkbox" value="care" class="nis2-crit accent-brand"> Vård- och omsorg</label>
+            <label class="chk !p-2"><input type="checkbox" value="municipal" class="nis2-crit accent-brand"> Kommunal ledning / kris</label>
+            <label class="chk !p-2"><input type="checkbox" value="energy" class="nis2-crit accent-brand"> Energi / Vatten / Avlopp</label>
+            <label class="chk !p-2 sm:col-span-2"><input type="checkbox" value="crossborder" class="nis2-crit accent-brand"> Gränsöverskridande påverkan (EU/EES)</label>
+          </div>
+        </div>
+
+        <div>
+          <label class="lbl" for="nis2Preventive">Förebyggande åtgärd (valfritt)</label>
+          <input type="text" id="nis2Preventive" maxlength="300" placeholder="Ex: Utökad batterikapacitet eller redundansväg" class="field text-xs">
+        </div>
+      </div>
+
+      <p id="closeErr" role="alert" class="text-xs text-danger min-h-[1rem]"></p>
+      <div class="flex justify-end gap-2 pt-1 border-t border-line">
+        <button data-action="cancelClose" class="btn !px-4 !py-2">Avbryt</button>
+        <button data-action="confirmClose" class="bg-brand hover:bg-brand-dark text-white font-semibold px-4 py-2 rounded-xl transition text-sm">Stäng &amp; skapa rapport</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="reopenDlg" class="bg-card text-fg border border-line rounded-2xl p-6 w-full max-w-md shadow-2xl">
+    <h2 class="text-base font-bold text-fg flex items-center gap-2"><span>↺</span> Återöppna ärende</h2>
+    <p id="reopenTitle" class="text-xs text-muted mb-4"></p>
+    <div class="space-y-3">
+      <div>
+        <label class="lbl" for="reopenNote">Anledning till återöppning (sparas i historiken)</label>
+        <textarea id="reopenNote" rows="3" maxlength="500" placeholder="Ex: Stängdes av misstag, eller felet återuppstod." class="field resize-none"></textarea>
+      </div>
+      <p id="reopenErr" role="alert" class="text-xs text-danger min-h-[1rem]"></p>
+      <div class="flex justify-end gap-2">
+        <button data-action="cancelReopen" class="btn !px-4 !py-2">Avbryt</button>
+        <button data-action="confirmReopen" class="bg-brand hover:bg-brand-dark text-white font-semibold px-4 py-2 rounded-xl transition text-sm">Återöppna ärendet</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="reportDlg" class="bg-card text-fg border border-line rounded-2xl p-6 w-full max-w-3xl shadow-2xl">
+    <div class="flex items-center justify-between pb-3 border-b border-line mb-4">
+      <div>
+        <h2 class="text-base font-bold text-fg flex items-center gap-2">
+          <span>🛡️</span> Incidentrapport &ndash; Cybersäkerhetslagen (NIS2)
+        </h2>
+        <p id="reportSub" class="text-xs text-muted mt-0.5">Sammanställt underlag för intern driftlogg och tillsynsmyndighet.</p>
+      </div>
+      <button data-action="closeReport" class="text-muted hover:text-fg text-xl font-bold" aria-label="Stäng">&times;</button>
+    </div>
+    <div class="space-y-4">
+      <textarea id="reportText" readonly class="out font-mono text-xs w-full min-h-[360px] max-h-[60vh] p-4 bg-inset border border-line rounded-xl resize-y select-all focus:outline-none"></textarea>
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-line">
+        <span class="text-[11px] text-faint">NIS2-underlag kan kompletteras i efterhand och skrivas ut som PDF.</span>
+        <div class="flex flex-wrap gap-2">
+          <button id="editNis2FromReportBtn" data-action="editNis2FromReport" class="btn text-accent !px-3.5 !py-2">✏️ Komplettera NIS2</button>
+          <button data-action="printReport" class="btn !px-3.5 !py-2">🖨️ Utskrift / PDF</button>
+          <button data-action="copyReport" class="btn !px-3.5 !py-2">📋 Kopiera</button>
+          <button data-action="downloadReport" class="btn !px-3.5 !py-2">💾 .md</button>
+          <button data-action="closeReport" class="bg-brand hover:bg-brand-dark text-white font-semibold px-4 py-2 rounded-xl transition text-xs">Klar</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="nis2EditDlg" class="bg-card text-fg border border-line rounded-2xl p-6 w-full max-w-2xl shadow-2xl">
+    <div class="flex items-center justify-between pb-3 border-b border-line mb-3">
+      <div>
+        <h2 class="text-base font-bold text-fg flex items-center gap-2">
+          <span>🛡️</span> Komplettera NIS2-underlag &amp; Slutanalys i arkivet
+        </h2>
+        <p id="nis2EditTitle" class="text-xs text-muted mt-0.5"></p>
+      </div>
+      <button data-action="cancelNis2Edit" class="text-muted hover:text-fg text-xl font-bold" aria-label="Stäng">&times;</button>
+    </div>
+
+    <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+      <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="lbl" for="editNis2RootCause">Bakomliggande orsaksklassificering</label>
+            <select id="editNis2RootCause" class="field text-xs">
+              <option value="tech">Tekniskt fel / Komponenthaveri</option>
+              <option value="thirdparty">Fysisk yttre åverkan / Grävskada</option>
+              <option value="power">Strömavbrott från överliggande elnät</option>
+              <option value="weather">Väder / Naturhändelse / Åska</option>
+              <option value="human">Mänsklig faktor / Konfigurationsfel</option>
+              <option value="cyber">Misstänkt cyberangrepp / Sabotage</option>
+              <option value="">Ej angiven / Planerat arbete</option>
+            </select>
+          </div>
+          <div>
+            <label class="lbl" for="editNis2Significant">Tröskelvärde enligt NIS2</label>
+            <select id="editNis2Significant" class="field text-xs">
+              <option value="no">Understiger tröskelvärde (Intern logg)</option>
+              <option value="yes">⚠️ BETYDANDE incident (Anmäls till myndighet)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="lbl" for="editNis2Customers">Berörda abonnenter/kunder (ca st)</label>
+            <input type="number" id="editNis2Customers" min="0" max="100000" placeholder="t.ex. 850" class="field font-mono text-xs">
+          </div>
+          <div>
+            <label class="lbl" for="editNis2Percent">Andel av användarbas (%)</label>
+            <input type="text" id="editNis2Percent" maxlength="10" placeholder="t.ex. 14" class="field font-mono text-xs">
+          </div>
+        </div>
+
+        <div>
+          <span class="lbl">Påverkan på samhällsviktiga funktioner</span>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs">
+            <label class="chk !p-2"><input type="checkbox" value="112" class="edit-nis2-crit accent-brand"> Blåljus / 112 / Rakel</label>
+            <label class="chk !p-2"><input type="checkbox" value="care" class="edit-nis2-crit accent-brand"> Vård- och omsorg</label>
+            <label class="chk !p-2"><input type="checkbox" value="municipal" class="edit-nis2-crit accent-brand"> Kommunal ledning / kris</label>
+            <label class="chk !p-2"><input type="checkbox" value="energy" class="edit-nis2-crit accent-brand"> Energi / Vatten / Avlopp</label>
+            <label class="chk !p-2 sm:col-span-2"><input type="checkbox" value="crossborder" class="edit-nis2-crit accent-brand"> Gränsöverskridande påverkan (EU/EES)</label>
+          </div>
+        </div>
+
+        <div>
+          <label class="lbl" for="editNis2CritComment">Detaljkommentar samhällsviktig verksamhet (valfritt)</label>
+          <input type="text" id="editNis2CritComment" maxlength="300" placeholder="Ex: Särskilt boende eller pumpstation berörd" class="field text-xs">
+        </div>
+      </div>
+
+      <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+        <span class="text-xs font-bold text-accent uppercase tracking-wider block">🔍 Rotårsak, Åtgärd &amp; Förebyggande arbete</span>
+        <div>
+          <label class="lbl" for="editNis2Resolution">Fastställd rotårsak &amp; vidtagen åtgärd vid avhjälpning</label>
+          <textarea id="editNis2Resolution" rows="2" maxlength="500" placeholder="Ex: Utbyte av defekt SFP-modul samt omstart av linjekort." class="field text-xs resize-none"></textarea>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="lbl" for="editNis2Preventive">Förebyggande åtgärd 1 (kort sikt)</label>
+            <input type="text" id="editNis2Preventive" maxlength="300" placeholder="Ex: Utökad reservdelshållning i nodhus" class="field text-xs">
+          </div>
+          <div>
+            <label class="lbl" for="editNis2Preventive2">Förebyggande åtgärd 2 (lång sikt)</label>
+            <input type="text" id="editNis2Preventive2" maxlength="300" placeholder="Ex: Dubblerad matningsväg planerad Q4" class="field text-xs">
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+        <span class="text-xs font-bold text-accent uppercase tracking-wider block">🏛️ Diarienummer &amp; Myndighetsreferenser (PTS / MSB / Polisen)</span>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label class="lbl" for="editNis2AuthorityRef">PTS / MSB ärende- eller diarienr</label>
+            <input type="text" id="editNis2AuthorityRef" maxlength="120" placeholder="Ex: PTS-2026-1042" class="field font-mono text-xs">
+          </div>
+          <div>
+            <label class="lbl" for="editNis2CertRef">CERT-SE referensnr</label>
+            <input type="text" id="editNis2CertRef" maxlength="120" placeholder="Ex: CERT-2026-881" class="field font-mono text-xs">
+          </div>
+          <div>
+            <label class="lbl" for="editNis2PoliceRef">Polisens diarienr (vid brott)</label>
+            <input type="text" id="editNis2PoliceRef" maxlength="120" placeholder="Ex: 5000-K123456-26" class="field font-mono text-xs">
+          </div>
+        </div>
+        <div>
+          <label class="lbl" for="editNis2UpdateNote">Notering till revisionsloggen om denna komplettering</label>
+          <input type="text" id="editNis2UpdateNote" maxlength="300" placeholder="Ex: Kompletterat med PTS diarienummer och slutrapport (1-månadsuppföljning)" class="field text-xs">
+        </div>
+      </div>
+    </div>
+
+    <p id="nis2EditErr" role="alert" class="text-xs text-danger min-h-[1rem] mt-2"></p>
+    <div class="flex justify-end gap-2 pt-3 border-t border-line">
+      <button data-action="cancelNis2Edit" class="btn !px-4 !py-2">Avbryt</button>
+      <button data-action="confirmNis2Update" class="bg-brand hover:bg-brand-dark text-white font-semibold px-4 py-2 rounded-xl transition text-xs">💾 Spara &amp; uppdatera rapport</button>
+    </div>
+  </dialog>
+
+  <!-- Integrationer, Nodregister, Användare & System -->
+  <dialog id="settingsDlg" class="bg-card text-fg border border-line rounded-2xl p-6 w-full max-w-4xl shadow-2xl">
+    <div class="flex items-center justify-between pb-3 border-b border-line mb-4">
+      <div>
+        <h2 class="text-base font-bold text-fg flex items-center gap-2">⚙️ Inställningar, Integrationer &amp; System</h2>
+        <p class="text-xs text-muted mt-0.5">Konfigurera FrameFlow, larmnotiser, nodregister, användarkonton samt säkerhetskopiering.</p>
+      </div>
+      <button data-action="closeSettings" class="text-muted hover:text-fg text-xl font-bold" aria-label="Stäng">&times;</button>
+    </div>
+
+    <div class="flex flex-wrap gap-2 border-b border-line pb-3 mb-4">
+      <button data-action="settingsTab" data-arg="ff" class="tab" aria-selected="true">📡 FrameFlow &amp; Notiser</button>
+      <button data-action="settingsTab" data-arg="nodes" class="tab" aria-selected="false">🗺️ Noder &amp; Områden</button>
+      <button data-action="settingsTab" data-arg="users" class="tab" aria-selected="false">👤 Användare &amp; 2FA</button>
+      <button data-action="settingsTab" data-arg="system" class="tab" aria-selected="false">💾 Backup &amp; Uppdatering</button>
+      <button data-action="settingsTab" data-arg="audit" class="tab" aria-selected="false">📜 Revisionslogg</button>
+    </div>
+
+    <div class="max-h-[65vh] overflow-y-auto pr-1 space-y-5">
+      <!-- Flik 1: FrameFlow & Notiser -->
+      <div id="stab-ff" class="space-y-5">
+        <!-- Push / Webhook -->
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-bold text-fg">1. Inkommande Webhook från er FrameFlow-leverantör (Push)</h3>
+              <p class="text-xs text-muted">Ge nedanstående URL och Token till er leverantör. Larm skickas i realtid till Admins larminkorg (aldrig direkt till publika portalen).</p>
+            </div>
+            <label class="chk !py-1.5 !px-3">
+              <input type="checkbox" id="ffPushEnabled" class="accent-brand" checked>
+              <span class="font-semibold">Tillåt Push</span>
+            </label>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="lbl" for="ffWebhookUrl">Webhook-URL (POST JSON)</label>
+              <div class="flex gap-1.5">
+                <input type="text" id="ffWebhookUrl" readonly class="field font-mono text-xs flex-1 select-all">
+                <button data-action="copy" data-arg="ffWebhookUrl" class="btn shrink-0">Kopiera</button>
+              </div>
+            </div>
+            <div>
+              <label class="lbl" for="ffIngestToken">Bearer-token (eller ?token=...)</label>
+              <div class="flex gap-1.5">
+                <input type="text" id="ffIngestToken" readonly class="field font-mono text-xs flex-1 select-all">
+                <button data-action="copy" data-arg="ffIngestToken" class="btn shrink-0">Kopiera</button>
+                <button data-action="rotateToken" class="btn text-amber-600 dark:text-amber-400 shrink-0" title="Generera ny hemlig token">🔄 Byt</button>
+              </div>
+            </div>
+          </div>
+
+          <details class="text-xs">
+            <summary class="cursor-pointer text-accent font-semibold select-none">📋 Visa färdig JSON-mall &amp; instruktion att skicka till er FrameFlow-leverantör</summary>
+            <div class="mt-2 space-y-2 bg-card p-3 rounded-xl border border-line">
+              <p class="text-muted">Be leverantören skapa en <strong>HTTP Notification Action</strong> i FrameFlow med metod <code>POST</code>, Content-Type <code>application/json</code>, Header <code>Authorization: Bearer &lt;token&gt;</code> och följande JSON-body:</p>
+              <textarea id="ffJsonTemplate" readonly rows="6" class="out font-mono text-[11px] w-full p-2.5">{
+  "device": "[device]",
+  "monitor": "[monitor]",
+  "status": "[status]",
+  "message": "[details]"
+}</textarea>
+              <div class="flex justify-between items-center">
+                <span id="ffPushStatus" class="text-[11px] text-faint"></span>
+                <button data-action="copy" data-arg="ffJsonTemplate" class="btn">Kopiera JSON-mall</button>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <!-- Pull / API Polling -->
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-bold text-fg">2. Utgående API-polling mot FrameFlow (Pull)</h3>
+              <p class="text-xs text-muted">Om er leverantör ger er läsåtkomst till FrameFlows REST API kan Driftpuls själv hämta aktiva larm med valt intervall.</p>
+            </div>
+            <label class="chk !py-1.5 !px-3">
+              <input type="checkbox" id="ffPullEnabled" class="accent-brand">
+              <span class="font-semibold">Aktivera API-polling</span>
+            </label>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+            <div class="sm:col-span-6">
+              <label class="lbl" for="ffApiUrl">FrameFlow REST API-URL</label>
+              <input type="url" id="ffApiUrl" placeholder="https://frameflow.leverantor.se/api/..." class="field font-mono text-xs">
+            </div>
+            <div class="sm:col-span-4">
+              <label class="lbl" for="ffApiKey">API-nyckel / Bearer-token</label>
+              <input type="password" id="ffApiKey" placeholder="Valfri API-nyckel" class="field font-mono text-xs">
+            </div>
+            <div class="sm:col-span-2">
+              <label class="lbl" for="ffPollInterval">Intervall (sek)</label>
+              <input type="number" id="ffPollInterval" min="15" max="3600" value="60" class="field font-mono text-xs">
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <span id="ffPollStatus" class="text-xs text-faint">Ingen API-polling har körts ännu.</span>
+            <button data-action="testFrameFlow" class="btn text-accent">🔌 Testa API-anslutning</button>
+          </div>
+        </div>
+
+        <!-- Utgående larmnotis (Teams / Slack / Discord / Webhook) -->
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-bold text-fg">3. Utgående Larmnotis (Microsoft Teams / Slack / Discord / Webhook)</h3>
+              <p class="text-xs text-muted">Skicka automatisk notis till jourkanal när ett nytt FrameFlow-larm inkommer i larminkorgen eller när ett ärende publiceras, uppdateras eller stängs.</p>
+            </div>
+            <label class="chk !py-1.5 !px-3">
+              <input type="checkbox" id="notifEnabled" class="accent-brand">
+              <span class="font-semibold">Aktivera notiser</span>
+            </label>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+            <div class="sm:col-span-8">
+              <label class="lbl" for="notifWebhookUrl">Utgående Webhook-URL (POST JSON)</label>
+              <input type="url" id="notifWebhookUrl" placeholder="https://.../webhook/..." class="field font-mono text-xs">
+            </div>
+            <div class="sm:col-span-4 flex flex-wrap gap-2">
+              <label class="chk !py-1.5 !px-2.5 text-xs flex-1">
+                <input type="checkbox" id="notifOnAlert" class="accent-brand" checked>
+                <span>Vid FrameFlow-larm</span>
+              </label>
+              <label class="chk !py-1.5 !px-2.5 text-xs flex-1">
+                <input type="checkbox" id="notifOnPublish" class="accent-brand">
+                <span>Vid publicering / stängning</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <span id="notifStatus" class="text-xs text-faint">Ingen utgående notis har skickats ännu.</span>
+            <button data-action="testNotification" class="btn text-accent">🔔 Skicka testnotis</button>
+          </div>
+        </div>
+
+        <!-- Simulering -->
+        <div class="bg-inset border border-line rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-fg2">🧪 Testa hela larmflödet i Admin</h3>
+            <p class="text-xs text-muted">Skapar ett realistiskt hårdvarularm i Admins larminkorg (påverkar inte den publika driftportalen).</p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button data-action="simulateAlert" data-arg="switch" class="btn text-accent">🚨 Simulera Switch-larm (Arbrå)</button>
+            <button data-action="simulateAlert" data-arg="ups" class="btn text-amber-600 dark:text-amber-400">🔋 Simulera UPS-larm (Bollnäs C)</button>
+            <button data-action="simulateAlert" data-arg="ok" class="btn text-emerald-600 dark:text-emerald-400">✅ Simulera Återställning (OK)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Flik 2: Noder & Områden -->
+      <div id="stab-nodes" class="space-y-4 hidden">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="text-xs text-muted">När ett larm inkommer matchas enhetens namn mot sökorden nedan. Nodregistret ger även snabbval i fältet <em>Område / Nod</em> och förifyller kundantal i NIS2-rapporten.</p>
+          <button data-action="addNode" class="btn text-accent shrink-0">+ Lägg till nod / område</button>
+        </div>
+        <div class="hidden sm:grid sm:grid-cols-12 gap-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
+          <div class="col-span-3">Område / Nodnamn</div>
+          <div class="col-span-2">Verksamhet</div>
+          <div class="col-span-3">FrameFlow-sökord / prefix</div>
+          <div class="col-span-2">Kunder (ca st)</div>
+          <div class="col-span-2">Samhällsviktig</div>
+        </div>
+        <div id="nodesList" class="space-y-2"></div>
+      </div>
+
+      <!-- Flik 3: Användare & Lösenord -->
+      <div id="stab-users" class="space-y-5 hidden">
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div>
+            <h3 class="text-sm font-bold text-fg">🔑 Byt mitt eget lösenord</h3>
+            <p class="text-xs text-muted">Lösenord måste vara minst 12 tecken långt. Du förblir inloggad i nuvarande session efter bytet.</p>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="lbl" for="myCurrentPw">Nuvarande lösenord</label>
+              <input type="password" id="myCurrentPw" autocomplete="current-password" class="field text-xs" placeholder="Nuvarande lösenord">
+            </div>
+            <div>
+              <label class="lbl" for="myNewPw">Nytt lösenord (minst 12 tecken)</label>
+              <input type="password" id="myNewPw" autocomplete="new-password" class="field text-xs" placeholder="Minst 12 tecken">
+            </div>
+            <div>
+              <label class="lbl" for="myNewPw2">Upprepa nytt lösenord</label>
+              <input type="password" id="myNewPw2" autocomplete="new-password" class="field text-xs" placeholder="Upprepa nytt lösenord">
+            </div>
+          </div>
+          <div class="flex items-center justify-between gap-2 pt-1">
+            <span id="myPwMsg" class="text-xs text-muted"></span>
+            <button data-action="changeMyPassword" class="bg-brand hover:bg-brand-dark text-white font-semibold px-4 py-1.5 rounded-xl transition text-xs">Uppdatera mitt lösenord</button>
+          </div>
+        </div>
+
+        <!-- Tvåfaktorsautentisering (TOTP / 2FA) för eget konto -->
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-bold text-fg flex items-center gap-2">
+                🛡️ Tvåfaktorsautentisering (2FA / TOTP)
+                <span id="myTotpBadge" class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-card border border-line text-muted">Inaktiv</span>
+              </h3>
+              <p class="text-xs text-muted">Skydda ditt konto med 6-siffrig engångskod via valfri autentiseringsapp (Microsoft Authenticator, Google Authenticator, Bitwarden, 1Password m.fl.).</p>
+            </div>
+            <button id="setupTotpBtn" data-action="setupMyTotp" class="btn text-accent shrink-0">🔐 Konfigurera 2FA</button>
+          </div>
+
+          <!-- Steg för att aktivera TOTP -->
+          <div id="totpSetupBox" class="hidden bg-card border border-line rounded-xl p-3.5 space-y-3 text-xs">
+            <p class="text-fg2 font-medium">1. Öppna din autentiseringsapp och lägg till ett nytt konto manuellt med nyckeln nedan (TOTP, 6 siffror, 30 sek, SHA-1):</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label class="lbl" for="totpSecretValue">Hemlig Base32-nyckel</label>
+                <div class="flex gap-1.5">
+                  <input type="text" id="totpSecretValue" readonly class="field font-mono text-xs flex-1 select-all">
+                  <button data-action="copy" data-arg="totpSecretValue" class="btn shrink-0">Kopiera</button>
+                </div>
+              </div>
+              <div>
+                <label class="lbl" for="totpUriValue">otpauth:// URI (för lösenordshanterare)</label>
+                <div class="flex gap-1.5">
+                  <input type="text" id="totpUriValue" readonly class="field font-mono text-xs flex-1 select-all">
+                  <button data-action="copy" data-arg="totpUriValue" class="btn shrink-0">Kopiera</button>
+                </div>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-end gap-2 pt-1">
+              <div class="w-44">
+                <label class="lbl" for="totpVerifyCode">2. Verifiera med 6-siffrig kod</label>
+                <input type="text" id="totpVerifyCode" inputmode="numeric" maxlength="6" placeholder="123456" class="field font-mono tracking-widest text-center text-sm">
+              </div>
+              <button data-action="enableMyTotp" class="bg-brand hover:bg-brand-dark text-white font-semibold px-4 py-2 rounded-xl transition text-xs">✅ Verifiera &amp; Aktivera 2FA</button>
+            </div>
+          </div>
+
+          <!-- Steg för att inaktivera TOTP om redan aktivt -->
+          <div id="totpDisableBox" class="hidden bg-card border border-line rounded-xl p-3.5 flex flex-wrap items-end justify-between gap-3 text-xs">
+            <div class="flex-1 min-w-[200px]">
+              <label class="lbl" for="totpDisablePw">Bekräfta med ditt nuvarande lösenord för att stänga av 2FA</label>
+              <input type="password" id="totpDisablePw" placeholder="Nuvarande lösenord" class="field text-xs">
+            </div>
+            <button data-action="disableMyTotp" class="btn text-danger shrink-0">Stäng av 2FA på mitt konto</button>
+          </div>
+          <p id="myTotpMsg" class="text-xs text-muted"></p>
+        </div>
+
+        <div id="adminUsersSection" class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div>
+            <h3 class="text-sm font-bold text-fg">👥 Administrera konton &amp; behörigheter</h3>
+            <p class="text-xs text-muted">Skapa individuella konton med rollen <strong>Tekniker</strong> (kan hantera larm, ärenden &amp; NIS2-rapporter) eller <strong>Admin</strong> (full behörighet inkl. systeminställningar, användare &amp; backup).</p>
+          </div>
+
+          <div id="usersList" class="space-y-2"></div>
+
+          <div class="border-t border-line pt-3 mt-3">
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-fg2 mb-2">+ Skapa nytt användarkonto</h4>
+            <div class="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
+              <div class="sm:col-span-4">
+                <label class="lbl" for="newUsername">Användarnamn (a-z, 0-9, ._-)</label>
+                <input type="text" id="newUsername" maxlength="40" placeholder="t.ex. anna" class="field font-mono text-xs">
+              </div>
+              <div class="sm:col-span-4">
+                <label class="lbl" for="newUserPw">Startlösenord (minst 12 tecken)</label>
+                <input type="password" id="newUserPw" placeholder="Minst 12 tecken" class="field text-xs">
+              </div>
+              <div class="sm:col-span-2">
+                <label class="lbl" for="newUserRole">Roll</label>
+                <select id="newUserRole" class="field text-xs">
+                  <option value="tekniker">Tekniker</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div class="sm:col-span-2">
+                <button data-action="addUser" class="w-full bg-brand hover:bg-brand-dark text-white font-semibold py-2 px-3 rounded-xl transition text-xs">+ Skapa</button>
+              </div>
+            </div>
+            <p id="userAdminMsg" class="text-xs text-muted mt-2"></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Flik 4: Backup & Uppdatering -->
+      <div id="stab-system" class="space-y-5 hidden">
+        <div class="bg-inset border border-line rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-bold text-fg">💾 Exportera säkerhetskopia direkt i webbläsaren</h3>
+            <p class="text-xs text-muted">Laddar ner en komplett JSON-fil med aktiva ärenden, stängda ärenden (arkiv), NIS2-rapporter, larm samt nod- och integrationsinställningar.</p>
+          </div>
+          <button data-action="downloadBackup" class="bg-brand hover:bg-brand-dark text-white font-semibold px-4 py-2 rounded-xl transition text-xs shrink-0">⬇️ Ladda ner säkerhetskopia (.json)</button>
+        </div>
+
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div>
+            <h3 class="text-sm font-bold text-fg">♻️ Återställ från säkerhetskopia (.json)</h3>
+            <p class="text-xs text-muted">Välj en tidigare exporterad <code>drift-backup-*.json</code>. Innan återställning sparas nuvarande tillstånd automatiskt till <code>data/pre-restore-backup.json</code> och alla NIS2-rapporter återskapas.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <input type="file" id="restoreBackupFile" accept=".json,application/json" class="field text-xs flex-1 min-w-[220px] py-1.5">
+            <button data-action="restoreBackup" class="bg-amber-600 hover:bg-amber-700 text-white font-semibold px-4 py-2 rounded-xl transition text-xs shrink-0">♻️ Återställ vald backup</button>
+          </div>
+          <div id="restorePreview" class="hidden text-xs bg-card border border-line rounded-xl p-3 font-mono text-fg2"></div>
+          <p id="restoreBackupMsg" class="text-xs text-muted"></p>
+        </div>
+
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-bold text-fg">📊 Systemstatus &amp; Lagring</h3>
+            <button data-action="refreshSystemInfo" class="text-xs text-accent hover:underline">🔄 Uppdatera</button>
+          </div>
+          <div id="systemInfoBox" class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div class="p-2.5 rounded-xl bg-card border border-line"><span class="text-faint block text-[10px]">Laddar...</span></div>
+          </div>
+        </div>
+
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-2 text-xs">
+          <h3 class="text-sm font-bold text-fg">🛡️ Framtida uppdatering vid CVE:er och nya Node.js-versioner</h3>
+          <p class="text-muted">Applikationen har endast <strong>1 produktionsberoende</strong> (<code>express</code>) och bygger på officiella Alpine Linux Docker-images. När en ny CVE eller säkerhetsuppdatering släpps kör du på servern:</p>
+          <pre class="bg-card border border-line rounded-xl p-3 font-mono text-[11px] overflow-x-auto">cd /sökväg/till/storningsgenerator
+./update.sh               # Tar backup, hämtar nyaste Node 24 &amp; Nginx Alpine, kör npm audit &amp; självtester och startar om
+./update.sh --audit-fix   # Uppdaterar även npm-paket automatiskt om en CVE hittats i package-lock.json</pre>
+          <p class="text-faint">För att uppgradera till nästa stora Node.js LTS-version i framtiden: ändra <code>FROM node:24-alpine</code> överst i <code>Dockerfile</code> och kör <code>./update.sh</code>.</p>
+        </div>
+      </div>
+
+      <!-- Flik 5: Revisionslogg (Audit Log Viewer) -->
+      <div id="stab-audit" class="space-y-4 hidden">
+        <div class="bg-inset border border-line rounded-xl p-4 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-bold text-fg">📜 Revisionslogg (Audit Trail – NIS2)</h3>
+              <p class="text-xs text-muted">Sökbar historik över inloggningar, publiceringar, ärendeändringar, användaradministration och systemhändelser från <code>audit.jsonl</code>.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button data-action="refreshAudit" class="btn text-accent text-xs">🔄 Uppdatera</button>
+              <button data-action="exportAudit" class="btn text-xs">⬇️ Exportera (.json)</button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-12 gap-2">
+            <div class="sm:col-span-7">
+              <input type="search" id="auditSearch" placeholder="Sök på användare, händelse, IP-adress eller ärende-ID..." class="field text-xs">
+            </div>
+            <div class="sm:col-span-5">
+              <select id="auditCategory" class="field text-xs">
+                <option value="all">Alla kategorier</option>
+                <option value="incidents">🚨 Ärenden &amp; NIS2 (publish, close, reopen...)</option>
+                <option value="auth">🔐 Autentisering &amp; 2FA (login, logout, totp...)</option>
+                <option value="admin">⚙️ System, Användare &amp; Backup</option>
+                <option value="frameflow">📡 FrameFlow &amp; Larm</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between text-[11px] text-faint">
+            <span id="auditSummary">Laddar händelser...</span>
+          </div>
+
+          <div id="auditList" class="space-y-1.5 max-h-[42vh] overflow-y-auto pr-1"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center justify-between gap-3 pt-4 mt-4 border-t border-line">
+      <span id="settingsMsg" class="text-xs text-muted"></span>
+      <div class="flex gap-2">
+        <button data-action="closeSettings" class="btn !px-4 !py-2">Stäng</button>
+        <button id="saveSettingsBtn" data-action="saveSettings" class="bg-brand hover:bg-brand-dark text-white font-semibold px-5 py-2 rounded-xl transition text-xs">💾 Spara inställningar</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="hidden" role="status"></div>
+
+  <script src="/admin.js" defer></script>
+</body>
+</html>

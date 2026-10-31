@@ -1,0 +1,17 @@
+# Lokala hemligheter och miljövariabler
+.env
+
+# Driftdata, användare, sessioner och rapporter
+data/
+
+# Lokala säkerhetskopior (genereras av ./backup.sh och ./update.sh)
+backup/
+backups/
+
+# Node-beroenden och temporära filer
+node_modules/
+npm-debug.log*
+*.bak
+*.tmp
+*.corrupt-*
+.DS_Store
