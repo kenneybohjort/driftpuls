@@ -951,4 +951,26 @@ test('15. Smart hantering av FrameFlow switch-larm (1 acc, 10 acc, 1 dist, flera
   const fullInc = incsAfterAll.find((i) => i.id === 'cluster-arbra-10');
   assert.equal(fullInc.nmsResolvedDevices.length, 10);
   assert.ok(fullInc.nmsResolvedAt);
+
+  // 6. Verifiera sammanslaget /api/poll-endpoint, /topology.js och att >50 switchlarm ryms i larminkorgen
+  const pollRes = await fetch(`${baseUrl}/api/poll`, { headers: adminHeaders });
+  assert.equal(pollRes.status, 200);
+  const pollJson = await pollRes.json();
+  assert.equal(pollJson.success, true);
+  assert.ok(Array.isArray(pollJson.incidents));
+  assert.ok(Array.isArray(pollJson.alerts));
+  assert.ok(pollJson.portalStatus && typeof pollJson.portalStatus === 'object');
+
+  const topoRes = await fetch(`${baseUrl}/topology.js`, { headers: adminHeaders });
+  assert.equal(topoRes.status, 200);
+
+  const sixtyAlerts = Array.from({ length: 60 }, (_, idx) => ({
+    device: `bol-c_acc_${String(idx + 1).padStart(2, '0')}`,
+    monitor: 'SNMP Ping',
+    status: 'Down',
+    message: 'Ingen kontakt',
+  }));
+  processFrameFlowPayload(sixtyAlerts, 'push');
+  const activeAfter60 = await (await fetch(`${baseUrl}/api/alerts`, { headers: adminHeaders })).json();
+  assert.ok(activeAfter60.length >= 60, `Förväntade minst 60 aktiva larm i inkorgen, fick ${activeAfter60.length}`);
 });

@@ -32,153 +32,9 @@ let currentUserRole = 'admin';
 let myTotpEnabled = false;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const UI_VERSION = '2026.11.02.1';
+const UI_VERSION = '2026.11.02.2';
 let editUpdatedAt = null;
-
-function parseDeviceRole(device = '') {
-  const s = String(device || '').trim();
-  const distMatch = s.match(/^([a-z0-9åäö_-]+?)[_-]dist(?:[_-]?(\d+))?$/i);
-  if (distMatch) {
-    return { prefix: distMatch[1].toLowerCase(), role: 'dist', num: distMatch[2] ? parseInt(distMatch[2], 10) : null, rawNum: distMatch[2] || '', raw: s };
-  }
-  const accMatch = s.match(/^([a-z0-9åäö_-]+?)[_-]acc(?:[_-]?(\d+))?$/i);
-  if (accMatch) {
-    return { prefix: accMatch[1].toLowerCase(), role: 'acc', num: accMatch[2] ? parseInt(accMatch[2], 10) : null, rawNum: accMatch[2] || '', raw: s };
-  }
-  if (/ups|batteri|battery|rectifier|likriktare/i.test(s)) {
-    return { prefix: s.toLowerCase(), role: 'ups', num: null, rawNum: '', raw: s };
-  }
-  return { prefix: s.toLowerCase(), role: 'other', num: null, rawNum: '', raw: s };
-}
-
-function summarizeDevices(devices = []) {
-  const list = [...new Set((devices || []).map((d) => String(d || '').trim()).filter(Boolean))];
-  if (list.length === 0) return '';
-  if (list.length === 1) return list[0];
-  const parsed = list.map(parseDeviceRole);
-  const groups = new Map();
-  for (const p of parsed) {
-    const gKey = p.role === 'acc' || p.role === 'dist' ? `${p.prefix}_${p.role}` : `other:${p.raw}`;
-    if (!groups.has(gKey)) groups.set(gKey, []);
-    groups.get(gKey).push(p);
-  }
-  const parts = [];
-  for (const [, items] of groups) {
-    if (items.length === 1) {
-      parts.push(items[0].raw);
-      continue;
-    }
-    const first = items[0];
-    const withNums = items.filter((i) => i.num !== null).sort((a, b) => a.num - b.num);
-    if (withNums.length === items.length && (first.role === 'acc' || first.role === 'dist')) {
-      const minItem = withNums[0];
-      const maxItem = withNums[withNums.length - 1];
-      const padLen = Math.max(minItem.rawNum.length, maxItem.rawNum.length, 2);
-      const minStr = String(minItem.num).padStart(padLen, '0');
-      const maxStr = String(maxItem.num).padStart(padLen, '0');
-      const sep = (maxItem.num - minItem.num + 1) === withNums.length ? '–' : '..';
-      parts.push(`${first.prefix}_${first.role}_${minStr}${sep}${maxStr} (${items.length} st)`);
-    } else {
-      parts.push(`${items.slice(0, 3).map((i) => i.raw).join(', ')}${items.length > 3 ? ` +${items.length - 3} till` : ''}`);
-    }
-  }
-  return parts.join(', ');
-}
-
-const CUSTOMERS_PER_ACC = 24;
-const ACC_PER_DIST = 24;
-const MAX_CUSTOMERS_PER_DIST = ACC_PER_DIST * CUSTOMERS_PER_ACC; // 576
-
-function computeSwitchImpact(alertList = [], node = null) {
-  const items = Array.isArray(alertList) ? alertList.filter(Boolean) : [alertList].filter(Boolean);
-  const first = items[0] || {};
-  const baseArea = String(node?.name || first.area || 'Okänt område')
-    .replace(/\s*\(begränsat område\)\s*$/i, '')
-    .replace(/^Delar av\s+/i, '')
-    .trim();
-  const totalCustomers = Math.max(0, parseInt(node?.customers ?? first.customers, 10) || 0);
-  const distCount = Math.max(1, parseInt(node?.distCount ?? first.distCount, 10) || 1);
-  const accCount = Math.max(1, parseInt(node?.accCount ?? first.accCount, 10) || 24);
-
-  const roles = items.map((a) => parseDeviceRole(a.device || ''));
-  const downDist = roles.filter((r) => r.role === 'dist').length;
-  const downAcc = roles.filter((r) => r.role === 'acc').length;
-
-  let publicArea = baseArea;
-  let scope = '';
-  let techDetails = `Driftstörning i ${baseArea}. Felsökning pågår.`;
-  let fraction = 1;
-  let summaryLabel = '';
-  let estimatedCustomers = totalCustomers;
-
-  if (downDist >= distCount || downAcc >= accCount) {
-    publicArea = baseArea;
-    scope = 'full';
-    techDetails = `Driftstörning i nod som påverkar ${baseArea}. Felsökning pågår.`;
-    fraction = 1;
-    summaryLabel = downDist > 0
-      ? `${downDist}/${distCount} dist-switchar nere (hela noden)`
-      : `${downAcc}/${accCount} access-switchar nere`;
-    estimatedCustomers = totalCustomers > 0
-      ? totalCustomers
-      : accCount * CUSTOMERS_PER_ACC;
-  } else if (downDist > 0 && downDist < distCount) {
-    publicArea = `Delar av ${baseArea}`;
-    scope = 'major';
-    techDetails = `Driftstörning i nod som påverkar delar av ${baseArea}. Felsökning pågår.`;
-    fraction = Math.max(downDist / distCount, downAcc / accCount);
-    summaryLabel = `${downDist} av ${distCount} dist-switchar nere${downAcc ? ` (+${downAcc} acc)` : ''}`;
-    const maxByDistPorts = downDist * MAX_CUSTOMERS_PER_DIST;
-    estimatedCustomers = totalCustomers > 0
-      ? Math.min(totalCustomers, maxByDistPorts, Math.max(1, Math.round(totalCustomers * fraction)))
-      : Math.min(accCount * CUSTOMERS_PER_ACC, maxByDistPorts);
-  } else if (downAcc > 1) {
-    publicArea = `Delar av ${baseArea}`;
-    scope = 'partial';
-    techDetails = `Driftstörning som påverkar delar av ${baseArea}. Felsökning pågår.`;
-    fraction = Math.min(1, downAcc / accCount);
-    summaryLabel = `${downAcc} av ${accCount} access-switchar nere`;
-    const maxByAccPorts = downAcc * CUSTOMERS_PER_ACC;
-    estimatedCustomers = totalCustomers > 0
-      ? Math.min(totalCustomers, maxByAccPorts, Math.max(1, Math.round(totalCustomers * fraction)))
-      : maxByAccPorts;
-  } else if (downAcc === 1) {
-    publicArea = `${baseArea} (begränsat område)`;
-    scope = 'limited';
-    techDetails = `Driftstörning som berör ett begränsat antal fastigheter i ${baseArea}. Felsökning pågår.`;
-    fraction = Math.min(1, 1 / accCount);
-    summaryLabel = `1 access-switch nere (1/${accCount})`;
-    estimatedCustomers = totalCustomers > 0
-      ? Math.min(totalCustomers, CUSTOMERS_PER_ACC, Math.max(1, Math.round(totalCustomers * fraction)))
-      : CUSTOMERS_PER_ACC;
-  } else if (roles.some((r) => r.role === 'ups')) {
-    publicArea = baseArea;
-    scope = 'full';
-    techDetails = `Strömavbrott påverkar utrustning i ${baseArea}. Felsökning pågår.`;
-    fraction = 1;
-    summaryLabel = 'UPS / Kraftmatning';
-    estimatedCustomers = totalCustomers > 0 ? totalCustomers : 0;
-  } else {
-    estimatedCustomers = totalCustomers > 0
-      ? Math.max(1, Math.round(totalCustomers * fraction))
-      : 0;
-  }
-
-  return {
-    baseArea,
-    publicArea,
-    scope,
-    techDetails,
-    estimatedCustomers,
-    totalCustomers,
-    fraction,
-    downDist,
-    downAcc,
-    distCount,
-    accCount,
-    summaryLabel,
-  };
-}
+// Switch- och topologifunktioner (parseDeviceRole, summarizeDevices, computeSwitchImpact) laddas från /topology.js
 let overdueFirstId = null;
 let reopeningId = null;
 let editingNis2Id = null;
@@ -557,9 +413,15 @@ async function fetchIncidents() {
     if (!res.ok) throw new Error(res.status);
     incidents = await res.json();
   } catch (e) {
-    box.innerHTML = '<p class="text-xs text-danger">Kunde inte hämta ärenden.</p>';
+    if (box) box.innerHTML = '<p class="text-xs text-danger">Kunde inte hämta ärenden.</p>';
     return;
   }
+  renderIncidents();
+}
+
+function renderIncidents() {
+  const box = $('activeIncidentsList');
+  if (!box) return;
   const now = nowLocal();
   const overdue = incidents.filter((i) => i.kind === 'planned' && endOf(i) && now > endOf(i));
   const alertBox = $('overduePlannedAlert');
@@ -641,10 +503,6 @@ async function fetchIncidents() {
 
 // ---------- FrameFlow Larminkorg ----------
 async function fetchAlerts() {
-  const box = $('alertsList');
-  const badge = $('alertsBadge');
-  const dismissAllBtn = $('dismissAllAlertsBtn');
-  if (!box) return;
   try {
     const res = await fetch('/api/alerts');
     if (!res.ok) throw new Error(res.status);
@@ -652,6 +510,14 @@ async function fetchAlerts() {
   } catch {
     return;
   }
+  renderAlerts();
+}
+
+function renderAlerts() {
+  const box = $('alertsList');
+  const badge = $('alertsBadge');
+  const dismissAllBtn = $('dismissAllAlertsBtn');
+  if (!box) return;
   const activeAlerts = alerts.filter((a) => !a.dismissed && !a.linkedIncidentId);
   if (badge) {
     badge.textContent = String(activeAlerts.length);
@@ -1972,6 +1838,26 @@ if (loadDraft()) {
 }
 if (!$('startDate').value) $('startDate').value = todayISO();
 generate();
+function renderPortalStatus(data) {
+  const dot = $('portalDot');
+  const txt = $('portalText');
+  const box = $('portalStatus');
+  if (!dot || !txt || !box || !data) return;
+  if (data.healthy) {
+    dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+    txt.className = 'text-emerald-600 dark:text-emerald-400 font-semibold';
+    txt.textContent = 'Portal: Online';
+    box.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 text-xs transition select-none cursor-help';
+    box.title = `Driftportal: Online (healthy)\nSvarstid: ${data.latency} ms\nKontrollerad: ${data.lastChecked ? new Date(data.lastChecked).toLocaleTimeString('sv-SE') : 'nyss'}\nURL: ${data.url}`;
+  } else {
+    dot.className = 'w-2 h-2 rounded-full bg-red-500 animate-pulse';
+    txt.className = 'text-red-600 dark:text-amber-400 font-semibold';
+    txt.textContent = 'Portal: Offline';
+    box.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl border border-red-500/40 bg-red-500/10 text-xs transition select-none cursor-help';
+    box.title = `Driftportal: Offline / Inte nåbar\nFel: ${data.error || 'Status ' + data.status}\nKontrollerad: ${data.lastChecked ? new Date(data.lastChecked).toLocaleTimeString('sv-SE') : 'nyss'}\nURL: ${data.url}`;
+  }
+}
+
 async function updatePortalStatus() {
   const dot = $('portalDot');
   const txt = $('portalText');
@@ -1981,19 +1867,7 @@ async function updatePortalStatus() {
     const res = await fetch('/api/portal-status');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    if (data.healthy) {
-      dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
-      txt.className = 'text-emerald-600 dark:text-emerald-400 font-semibold';
-      txt.textContent = 'Portal: Online';
-      box.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 text-xs transition select-none cursor-help';
-      box.title = `Driftportal: Online (healthy)\nSvarstid: ${data.latency} ms\nKontrollerad: ${data.lastChecked ? new Date(data.lastChecked).toLocaleTimeString('sv-SE') : 'nyss'}\nURL: ${data.url}`;
-    } else {
-      dot.className = 'w-2 h-2 rounded-full bg-red-500 animate-pulse';
-      txt.className = 'text-red-600 dark:text-amber-400 font-semibold';
-      txt.textContent = 'Portal: Offline';
-      box.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl border border-red-500/40 bg-red-500/10 text-xs transition select-none cursor-help';
-      box.title = `Driftportal: Offline / Inte nåbar\nFel: ${data.error || 'Status ' + data.status}\nKontrollerad: ${data.lastChecked ? new Date(data.lastChecked).toLocaleTimeString('sv-SE') : 'nyss'}\nURL: ${data.url}`;
-    }
+    renderPortalStatus(data);
   } catch (err) {
     dot.className = 'w-2 h-2 rounded-full bg-amber-500';
     txt.className = 'text-amber-600 dark:text-amber-400 font-semibold';
@@ -2003,13 +1877,40 @@ async function updatePortalStatus() {
   }
 }
 
+async function pollAdminState() {
+  try {
+    const res = await fetch('/api/poll');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (Array.isArray(data.alerts)) {
+      alerts = data.alerts;
+      renderAlerts();
+    }
+    if (Array.isArray(data.incidents)) {
+      incidents = data.incidents;
+      renderIncidents();
+    }
+    if (data.portalStatus) {
+      renderPortalStatus(data.portalStatus);
+    }
+    if ($('archiveBox')?.open) {
+      fetchArchive();
+    }
+  } catch {
+    fetchAlerts();
+    fetchIncidents();
+    updatePortalStatus();
+  }
+}
+
 loadSettingsData();
-fetchAlerts();
-fetchIncidents();
-fetchArchive();
-updatePortalStatus();
-setInterval(() => { fetchAlerts(); fetchIncidents(); fetchArchive(); }, 20000);
-setInterval(updatePortalStatus, 20000);
+pollAdminState();
+setInterval(() => {
+  if (!document.hidden) pollAdminState();
+}, 20000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) pollAdminState();
+});
 fetch('/api/config').then((r) => r.json()).then((c) => {
   const portalUrl = c.publicUrl || `${location.protocol}//${location.hostname}:${c.portalPort || 3001}/`;
   PUBLIC_URL = portalUrl;

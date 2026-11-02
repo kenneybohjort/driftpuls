@@ -107,10 +107,32 @@ module.exports = (DATA_DIR) => {
   // ---------- Användare & Roller (admin / tekniker) ----------
   const ROLES = ['admin', 'tekniker'];
   const normRole = (r) => (r === 'tekniker' ? 'tekniker' : 'admin');
-  const load = () => read(usersFile, {});
+  let usersCache = { mtimeMs: -1, data: {} };
+  const loadReadOnly = () => {
+    try {
+      const st = fs.statSync(usersFile);
+      if (st.mtimeMs === usersCache.mtimeMs) return usersCache.data;
+      const parsed = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+      usersCache = { mtimeMs: st.mtimeMs, data: parsed && typeof parsed === 'object' ? parsed : {} };
+      return usersCache.data;
+    } catch {
+      usersCache = { mtimeMs: -1, data: {} };
+      return usersCache.data;
+    }
+  };
+  const load = () => structuredClone(loadReadOnly());
+  const saveUsers = (u) => {
+    write(usersFile, u);
+    try {
+      const st = fs.statSync(usersFile);
+      usersCache = { mtimeMs: st.mtimeMs, data: structuredClone(u) };
+    } catch {
+      usersCache = { mtimeMs: -1, data: {} };
+    }
+  };
   const users = {
-    list: () => Object.keys(load()),
-    listDetailed: () => Object.entries(load())
+    list: () => Object.keys(loadReadOnly()),
+    listDetailed: () => Object.entries(loadReadOnly())
       .map(([username, info]) => ({
         username,
         role: normRole(info?.role),
@@ -120,16 +142,16 @@ module.exports = (DATA_DIR) => {
       }))
       .sort((a, b) => a.username.localeCompare(b.username)),
     getRole(name) {
-      const rec = load()[String(name || '').trim().toLowerCase()];
+      const rec = loadReadOnly()[String(name || '').trim().toLowerCase()];
       return normRole(rec?.role);
     },
     hasTotp(name) {
-      const rec = load()[String(name || '').trim().toLowerCase()];
+      const rec = loadReadOnly()[String(name || '').trim().toLowerCase()];
       return Boolean(rec?.totpSecret);
     },
     verifyPassword(name, pw) {
       name = String(name || '').toLowerCase();
-      const rec = load()[name];
+      const rec = loadReadOnly()[name];
       if (!rec) return false;
       return verify(String(pw ?? ''), rec.hash);
     },
@@ -141,7 +163,7 @@ module.exports = (DATA_DIR) => {
       const u = load();
       if (u[name]) throw new Error('Användaren finns redan');
       u[name] = { hash: hash(String(pw)), role, pwv: 1, created: new Date().toISOString() };
-      write(usersFile, u);
+      saveUsers(u);
     },
     setRole(name, role) {
       name = String(name || '').trim().toLowerCase();
@@ -155,7 +177,7 @@ module.exports = (DATA_DIR) => {
       }
       u[name].role = role;
       u[name].updated = new Date().toISOString();
-      write(usersFile, u);
+      saveUsers(u);
     },
     passwd(name, pw) {
       name = String(name || '').trim().toLowerCase();
@@ -165,7 +187,7 @@ module.exports = (DATA_DIR) => {
       u[name].hash = hash(String(pw));
       u[name].pwv = (u[name].pwv || 1) + 1; // loggar ut alla pågående sessioner
       u[name].updated = new Date().toISOString();
-      write(usersFile, u);
+      saveUsers(u);
     },
     setupTotp(name) {
       name = String(name || '').trim().toLowerCase();
@@ -173,7 +195,7 @@ module.exports = (DATA_DIR) => {
       if (!u[name]) throw new Error('Användaren finns inte');
       const secret = generateTotpSecret();
       u[name].pendingTotpSecret = secret;
-      write(usersFile, u);
+      saveUsers(u);
       const issuer = encodeURIComponent('Driftpuls');
       const account = encodeURIComponent(name);
       const otpauthUrl = `otpauth://totp/${issuer}:${account}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
@@ -191,7 +213,7 @@ module.exports = (DATA_DIR) => {
       u[name].totpSecret = pending;
       delete u[name].pendingTotpSecret;
       u[name].updated = new Date().toISOString();
-      write(usersFile, u);
+      saveUsers(u);
       return true;
     },
     disableTotp(name) {
@@ -201,7 +223,7 @@ module.exports = (DATA_DIR) => {
       delete u[name].totpSecret;
       delete u[name].pendingTotpSecret;
       u[name].updated = new Date().toISOString();
-      write(usersFile, u);
+      saveUsers(u);
       return true;
     },
     remove(name) {
@@ -214,7 +236,7 @@ module.exports = (DATA_DIR) => {
         if (adminCount <= 1) throw new Error('Kan inte ta bort den sista administratören');
       }
       delete u[name];
-      write(usersFile, u);
+      saveUsers(u);
     },
   };
 
@@ -242,11 +264,12 @@ module.exports = (DATA_DIR) => {
     const t = cookie(req);
     const s = t && sessions.get(sha(t));
     if (!s) return null;
-    const now = Date.now(), u = load()[s.user];
+    const now = Date.now(), u = loadReadOnly()[s.user];
     if (!u || u.pwv !== s.pwv || now - s.seen > IDLE || now - s.created > ABSOLUTE) {
       sessions.delete(sha(t)); persist(); return null;
     }
     s.seen = now;
+    s.role = normRole(u.role);
     return s;
   }
 
@@ -349,7 +372,7 @@ module.exports = (DATA_DIR) => {
     const s = session(req);
     if (s) {
       req.adminUser = s.user;
-      req.userRole = users.getRole(s.user);
+      req.userRole = s.role || users.getRole(s.user);
       return next();
     }
     if (req.originalUrl.startsWith('/api')) return res.status(401).json({ success: false, error: 'Inte inloggad' });

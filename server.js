@@ -11,7 +11,7 @@ const PUBLIC_URL = process.env.PUBLIC_URL || '';
 const PORTAL_PORT = Number(process.env.PORTAL_PORT) || 3001;
 const ADMIN_USER = process.env.ADMIN_USER; // används bara för att skapa första kontot
 const ADMIN_PASS = process.env.ADMIN_PASS;
-const APP_VERSION = '2026.11.02.1'; // höj vid varje ändring: visas i sidans fot så man ser om server och sida är i takt
+const APP_VERSION = '2026.11.02.2'; // höj vid varje ändring: visas i sidans fot så man ser om server och sida är i takt
 const dataFile = path.join(DATA_DIR, 'storingar.json');
 const archiveFile = path.join(DATA_DIR, 'arkiv.jsonl'); // stängda ärenden (driftlogg)
 const auditFile = path.join(DATA_DIR, 'audit.jsonl'); // beständig revisionslogg
@@ -53,17 +53,27 @@ const audit = (action, o = {}) => {
   }
 };
 
+let dataCache = { mtimeMs: -1, list: [] };
 function load() {
-  if (!fs.existsSync(dataFile)) return [];
+  if (!fs.existsSync(dataFile)) {
+    dataCache = { mtimeMs: -1, list: [] };
+    return [];
+  }
   try {
+    const st = fs.statSync(dataFile);
+    if (st.mtimeMs === dataCache.mtimeMs) {
+      return structuredClone(dataCache.list);
+    }
     const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
     if (!Array.isArray(data)) throw new Error('inte en lista');
-    return data;
+    dataCache = { mtimeMs: st.mtimeMs, list: data };
+    return structuredClone(data);
   } catch (e) {
     // Skriv aldrig över en trasig fil tyst – spara en kopia först
     const bak = `${dataFile}.corrupt-${Date.now()}`;
     fs.copyFileSync(dataFile, bak);
     console.error(`storingar.json var trasig, kopia sparad som ${bak}`);
+    dataCache = { mtimeMs: -1, list: [] };
     return [];
   }
 }
@@ -73,6 +83,12 @@ function save(list) {
   const tmp = `${dataFile}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(list, null, 2));
   fs.renameSync(tmp, dataFile);
+  try {
+    const st = fs.statSync(dataFile);
+    dataCache = { mtimeMs: st.mtimeMs, list: structuredClone(list) };
+  } catch {
+    dataCache = { mtimeMs: -1, list: [] };
+  }
 }
 
 const DEFAULT_NODES = [
@@ -86,7 +102,16 @@ const DEFAULT_NODES = [
   { id: 'fv-bollnas', name: 'Fjärrvärme Bollnäs', domain: 'fjarrvarme', match: 'fv-, varme, värmeverk, panncentral', customers: 1200, distCount: 1, accCount: 1, critical: 'care, municipal, energy' },
 ];
 
+let settingsCache = { mtimeMs: -1, data: null };
 function loadSettings() {
+  if (fs.existsSync(settingsFile)) {
+    try {
+      const st = fs.statSync(settingsFile);
+      if (st.mtimeMs === settingsCache.mtimeMs && settingsCache.data) {
+        return structuredClone(settingsCache.data);
+      }
+    } catch {}
+  }
   let saved = {};
   if (fs.existsSync(settingsFile)) {
     try { saved = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) || {}; } catch {}
@@ -126,7 +151,14 @@ function loadSettings() {
       };
     }),
   };
-  if (!fs.existsSync(settingsFile)) saveSettings(settings);
+  if (!fs.existsSync(settingsFile)) {
+    saveSettings(settings);
+  } else {
+    try {
+      const st = fs.statSync(settingsFile);
+      settingsCache = { mtimeMs: st.mtimeMs, data: structuredClone(settings) };
+    } catch {}
+  }
   return settings;
 }
 
@@ -170,20 +202,69 @@ function saveSettings(settings) {
   const tmp = `${settingsFile}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(settings, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, settingsFile);
+  try {
+    const st = fs.statSync(settingsFile);
+    settingsCache = { mtimeMs: st.mtimeMs, data: structuredClone(settings) };
+  } catch {
+    settingsCache = { mtimeMs: -1, data: null };
+  }
 }
 
+let alertsCache = { mtimeMs: -1, list: [] };
 function loadAlerts() {
-  if (!fs.existsSync(alertsFile)) return [];
+  if (!fs.existsSync(alertsFile)) {
+    alertsCache = { mtimeMs: -1, list: [] };
+    return [];
+  }
   try {
+    const st = fs.statSync(alertsFile);
+    if (st.mtimeMs === alertsCache.mtimeMs) {
+      return structuredClone(alertsCache.list);
+    }
     const list = JSON.parse(fs.readFileSync(alertsFile, 'utf8'));
-    return Array.isArray(list) ? list : [];
-  } catch { return []; }
+    const valid = Array.isArray(list) ? list : [];
+    alertsCache = { mtimeMs: st.mtimeMs, list: valid };
+    return structuredClone(valid);
+  } catch {
+    alertsCache = { mtimeMs: -1, list: [] };
+    return [];
+  }
 }
 
 function saveAlerts(list) {
   const tmp = `${alertsFile}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(list, null, 2));
   fs.renameSync(tmp, alertsFile);
+  try {
+    const st = fs.statSync(alertsFile);
+    alertsCache = { mtimeMs: st.mtimeMs, list: structuredClone(list) };
+  } catch {
+    alertsCache = { mtimeMs: -1, list: [] };
+  }
+}
+
+let archiveCache = { mtimeMs: -1, rows: [] };
+function loadArchiveRows() {
+  if (!fs.existsSync(archiveFile)) {
+    archiveCache = { mtimeMs: -1, rows: [] };
+    return [];
+  }
+  try {
+    const st = fs.statSync(archiveFile);
+    if (st.mtimeMs === archiveCache.mtimeMs) {
+      return structuredClone(archiveCache.rows);
+    }
+    const rows = fs.readFileSync(archiveFile, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+    archiveCache = { mtimeMs: st.mtimeMs, rows };
+    return structuredClone(rows);
+  } catch {
+    archiveCache = { mtimeMs: -1, rows: [] };
+    return [];
+  }
 }
 
 function matchNode(searchStr, nodes) {
@@ -196,72 +277,14 @@ function matchNode(searchStr, nodes) {
   return null;
 }
 
-// Identifiera enhetsroll utifrån namnsättning, t.ex. "arbra_acc_04", "arbra_dist_01", "bol-c-nod02-ups1"
-function parseDeviceRole(device = '') {
-  const s = String(device || '').trim();
-  const distMatch = s.match(/^([a-z0-9åäö_-]+?)[_-]dist(?:[_-]?(\d+))?$/i);
-  if (distMatch) {
-    return {
-      prefix: distMatch[1].toLowerCase(),
-      role: 'dist',
-      num: distMatch[2] ? parseInt(distMatch[2], 10) : null,
-      rawNum: distMatch[2] || '',
-      raw: s,
-    };
-  }
-  const accMatch = s.match(/^([a-z0-9åäö_-]+?)[_-]acc(?:[_-]?(\d+))?$/i);
-  if (accMatch) {
-    return {
-      prefix: accMatch[1].toLowerCase(),
-      role: 'acc',
-      num: accMatch[2] ? parseInt(accMatch[2], 10) : null,
-      rawNum: accMatch[2] || '',
-      raw: s,
-    };
-  }
-  if (/ups|batteri|battery|rectifier|likriktare/i.test(s)) {
-    return { prefix: s.toLowerCase(), role: 'ups', num: null, rawNum: '', raw: s };
-  }
-  return { prefix: s.toLowerCase(), role: 'other', num: null, rawNum: '', raw: s };
-}
-
-// Komprimera enhetslista för adminvy/NIS2, t.ex. ["arbra_acc_03", ..., "arbra_acc_12"] -> "arbra_acc_03–12 (10 st)"
-function summarizeDevices(devices = []) {
-  const list = [...new Set((devices || []).map((d) => String(d || '').trim()).filter(Boolean))];
-  if (list.length === 0) return '';
-  if (list.length === 1) return list[0];
-
-  const parsed = list.map(parseDeviceRole);
-  const groups = new Map();
-  for (const p of parsed) {
-    const gKey = p.role === 'acc' || p.role === 'dist' ? `${p.prefix}_${p.role}` : `other:${p.raw}`;
-    if (!groups.has(gKey)) groups.set(gKey, []);
-    groups.get(gKey).push(p);
-  }
-
-  const parts = [];
-  for (const [, items] of groups) {
-    if (items.length === 1) {
-      parts.push(items[0].raw);
-      continue;
-    }
-    const first = items[0];
-    const withNums = items.filter((i) => i.num !== null).sort((a, b) => a.num - b.num);
-    if (withNums.length === items.length && (first.role === 'acc' || first.role === 'dist')) {
-      const minItem = withNums[0];
-      const maxItem = withNums[withNums.length - 1];
-      const padLen = Math.max(minItem.rawNum.length, maxItem.rawNum.length, 2);
-      const minStr = String(minItem.num).padStart(padLen, '0');
-      const maxStr = String(maxItem.num).padStart(padLen, '0');
-      const isContiguous = (maxItem.num - minItem.num + 1) === withNums.length;
-      const sep = isContiguous ? '–' : '..';
-      parts.push(`${first.prefix}_${first.role}_${minStr}${sep}${maxStr} (${items.length} st)`);
-    } else {
-      parts.push(`${items.slice(0, 3).map((i) => i.raw).join(', ')}${items.length > 3 ? ` +${items.length - 3} till` : ''}`);
-    }
-  }
-  return parts.join(', ');
-}
+const {
+  CUSTOMERS_PER_ACC,
+  ACC_PER_DIST,
+  MAX_CUSTOMERS_PER_DIST,
+  parseDeviceRole,
+  summarizeDevices,
+  computeSwitchImpact,
+} = require('./public/topology');
 
 const VALID_SCOPES = ['', 'limited', 'partial', 'major', 'full'];
 const SCOPE_META = {
@@ -282,106 +305,6 @@ const SCOPE_META = {
     style: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30',
   },
 };
-
-const CUSTOMERS_PER_ACC = 24;
-const ACC_PER_DIST = 24;
-const MAX_CUSTOMERS_PER_DIST = ACC_PER_DIST * CUSTOMERS_PER_ACC; // 576
-
-// Beräkna publik områdesrubrik, omfattnings-badge, neutral lägesrapport och kundpåverkan (NIS2)
-function computeSwitchImpact(alertList = [], node = null) {
-  const items = Array.isArray(alertList) ? alertList.filter(Boolean) : [alertList].filter(Boolean);
-  const first = items[0] || {};
-  const baseArea = String(node?.name || first.area || 'Okänt område')
-    .replace(/\s*\(begränsat område\)\s*$/i, '')
-    .replace(/^Delar av\s+/i, '')
-    .trim();
-  const totalCustomers = Math.max(0, parseInt(node?.customers ?? first.customers, 10) || 0);
-  const distCount = Math.max(1, parseInt(node?.distCount ?? first.distCount, 10) || 1);
-  const accCount = Math.max(1, parseInt(node?.accCount ?? first.accCount, 10) || 24);
-
-  const roles = items.map((a) => parseDeviceRole(a.device || ''));
-  const downDist = roles.filter((r) => r.role === 'dist').length;
-  const downAcc = roles.filter((r) => r.role === 'acc').length;
-
-  let publicArea = baseArea;
-  let scope = '';
-  let techDetails = `Driftstörning i ${baseArea}. Felsökning pågår.`;
-  let fraction = 1;
-  let summaryLabel = '';
-  let estimatedCustomers = totalCustomers;
-
-  if (downDist >= distCount || downAcc >= accCount) {
-    // Samtliga dist-switchar i fiberboden (t.ex. 1 av 1) eller alla access-switchar nere -> Hela området
-    publicArea = baseArea;
-    scope = 'full';
-    techDetails = `Driftstörning i nod som påverkar ${baseArea}. Felsökning pågår.`;
-    fraction = 1;
-    summaryLabel = downDist > 0
-      ? `${downDist}/${distCount} dist-switchar nere (hela noden)`
-      : `${downAcc}/${accCount} access-switchar nere`;
-    estimatedCustomers = totalCustomers > 0
-      ? totalCustomers
-      : accCount * CUSTOMERS_PER_ACC;
-  } else if (downDist > 0 && downDist < distCount) {
-    // 1 av flera dist-switchar i större fiberbod nere -> Större delområde (max 24*24 = 576 kunder per dist-switch)
-    publicArea = `Delar av ${baseArea}`;
-    scope = 'major';
-    techDetails = `Driftstörning i nod som påverkar delar av ${baseArea}. Felsökning pågår.`;
-    fraction = Math.max(downDist / distCount, downAcc / accCount);
-    summaryLabel = `${downDist} av ${distCount} dist-switchar nere${downAcc ? ` (+${downAcc} acc)` : ''}`;
-    const maxByDistPorts = downDist * MAX_CUSTOMERS_PER_DIST;
-    estimatedCustomers = totalCustomers > 0
-      ? Math.min(totalCustomers, maxByDistPorts, Math.max(1, Math.round(totalCustomers * fraction)))
-      : Math.min(accCount * CUSTOMERS_PER_ACC, maxByDistPorts);
-  } else if (downAcc > 1) {
-    // Flera access-switchar nere i samma nod (t.ex. arbra_acc_03..12) -> Flera delområden (max 24 kunder per acc-switch)
-    publicArea = `Delar av ${baseArea}`;
-    scope = 'partial';
-    techDetails = `Driftstörning som påverkar delar av ${baseArea}. Felsökning pågår.`;
-    fraction = Math.min(1, downAcc / accCount);
-    summaryLabel = `${downAcc} av ${accCount} access-switchar nere`;
-    const maxByAccPorts = downAcc * CUSTOMERS_PER_ACC;
-    estimatedCustomers = totalCustomers > 0
-      ? Math.min(totalCustomers, maxByAccPorts, Math.max(1, Math.round(totalCustomers * fraction)))
-      : maxByAccPorts;
-  } else if (downAcc === 1) {
-    // En enskild access-switch nere (t.ex. arbra_acc_04) -> Begränsat delområde (max 24 kunder)
-    publicArea = `${baseArea} (begränsat område)`;
-    scope = 'limited';
-    techDetails = `Driftstörning som berör ett begränsat antal fastigheter i ${baseArea}. Felsökning pågår.`;
-    fraction = Math.min(1, 1 / accCount);
-    summaryLabel = `1 access-switch nere (1/${accCount})`;
-    estimatedCustomers = totalCustomers > 0
-      ? Math.min(totalCustomers, CUSTOMERS_PER_ACC, Math.max(1, Math.round(totalCustomers * fraction)))
-      : CUSTOMERS_PER_ACC;
-  } else if (roles.some((r) => r.role === 'ups')) {
-    publicArea = baseArea;
-    scope = 'full';
-    techDetails = `Strömavbrott påverkar utrustning i ${baseArea}. Felsökning pågår.`;
-    fraction = 1;
-    summaryLabel = 'UPS / Kraftmatning';
-    estimatedCustomers = totalCustomers > 0 ? totalCustomers : 0;
-  } else {
-    estimatedCustomers = totalCustomers > 0
-      ? Math.max(1, Math.round(totalCustomers * fraction))
-      : 0;
-  }
-
-  return {
-    baseArea,
-    publicArea,
-    scope,
-    techDetails,
-    estimatedCustomers,
-    totalCustomers,
-    fraction,
-    downDist,
-    downAcc,
-    distCount,
-    accCount,
-    summaryLabel,
-  };
-}
 
 const DOMAINS = ['stadsnat', 'fjarrvarme'];
 const DOMAIN_LABEL = { stadsnat: 'Stadsnät', fjarrvarme: 'Fjärrvärme' };
@@ -913,6 +836,7 @@ const JS_V = (() => {
 const readPage = (name) => fs.readFileSync(path.join(__dirname, 'public', name), 'utf8')
   .replace('/assets/tailwind.css', `/assets/tailwind.css?v=${CSS_V}`)
   .replace('/theme.js', `/theme.js?v=${JS_V}`)
+  .replace('/topology.js', `/topology.js?v=${JS_V}`)
   .replace('/admin.js', `/admin.js?v=${JS_V}`)
   .replace('/login.js', `/login.js?v=${JS_V}`);
 const ADMIN_HTML = readPage('index.html');
@@ -937,27 +861,24 @@ const TONE = {
 };
 
 function loadRecentlyResolved(hours = 24, activeIds = new Set()) {
-  if (!fs.existsSync(archiveFile)) return [];
+  const rows = loadArchiveRows();
+  if (!rows.length) return [];
   const cutoffMs = Date.now() - hours * 3600 * 1000;
   const seen = new Set();
   const recent = [];
-  try {
-    const lines = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean).reverse();
-    for (const line of lines) {
-      let r;
-      try { r = JSON.parse(line); } catch { continue; }
-      if (!r || !r.id || activeIds.has(r.id) || seen.has(r.id) || r.hidePublic) continue;
-      // Hoppa över planerade arbeten som avbokats före start
-      if (r.kind === 'planned' && r.endedAt && r.endedAt < startKey(r)) continue;
-      const closedMs = r.closedAt
-        ? Date.parse(r.closedAt)
-        : (r.endedAt ? Date.parse(r.endedAt.replace(' ', 'T') + ':00') : NaN);
-      if (Number.isNaN(closedMs) || closedMs < cutoffMs) continue;
-      seen.add(r.id);
-      recent.push(r);
-      if (recent.length >= 10) break;
-    }
-  } catch {}
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (!r || !r.id || activeIds.has(r.id) || seen.has(r.id) || r.hidePublic) continue;
+    // Hoppa över planerade arbeten som avbokats före start
+    if (r.kind === 'planned' && r.endedAt && r.endedAt < startKey(r)) continue;
+    const closedMs = r.closedAt
+      ? Date.parse(r.closedAt)
+      : (r.endedAt ? Date.parse(r.endedAt.replace(' ', 'T') + ':00') : NaN);
+    if (Number.isNaN(closedMs) || closedMs < cutoffMs) continue;
+    seen.add(r.id);
+    recent.push(r);
+    if (recent.length >= 10) break;
+  }
   return recent;
 }
 
@@ -1227,15 +1148,21 @@ function autoArchiveCompletedPlanned(graceMinutes = 60, refNow = nowLocal()) {
   return archivedCount;
 }
 
+let lastCopiedCssMtime = -1;
 // Generera den statiska publika driftportalen, status.json och rss.xml
 function generatePublicSite() {
   try {
     autoArchiveCompletedPlanned(60);
     const assetsDir = path.join(PUBLIC_DIR, 'assets');
-    fs.mkdirSync(assetsDir, { recursive: true });
-    const srcAssets = path.join(__dirname, 'public', 'assets');
-    if (fs.existsSync(srcAssets)) {
-      fs.cpSync(srcAssets, assetsDir, { recursive: true });
+    const srcCss = path.join(__dirname, 'public', 'assets', 'tailwind.css');
+    const dstCss = path.join(assetsDir, 'tailwind.css');
+    const srcMtime = fs.existsSync(srcCss) ? fs.statSync(srcCss).mtimeMs : 0;
+    if (srcMtime && (srcMtime !== lastCopiedCssMtime || !fs.existsSync(dstCss))) {
+      fs.mkdirSync(assetsDir, { recursive: true });
+      fs.cpSync(path.join(__dirname, 'public', 'assets'), assetsDir, { recursive: true });
+      lastCopiedCssMtime = srcMtime;
+    } else if (!fs.existsSync(assetsDir)) {
+      fs.mkdirSync(assetsDir, { recursive: true });
     }
     const all = load();
     const activeIds = new Set(all.map((i) => i.id));
@@ -1515,8 +1442,15 @@ function processFrameFlowPayload(payload, source = 'push') {
     }
   }
 
-  // Behåll max 50 larm i inkorgen
-  saveAlerts(alerts.slice(0, 50));
+  // Städa bort avfärdade och äldre återställda larm först, behåll upp till 250 larm så att även stora switch-kluster ryms
+  const MAX_ALERTS = 250;
+  let prunedAlerts = alerts;
+  if (prunedAlerts.length > MAX_ALERTS) {
+    const activeUnlinked = prunedAlerts.filter((a) => !a.dismissed && !a.resolvedAt);
+    const rest = prunedAlerts.filter((a) => a.dismissed || a.resolvedAt);
+    prunedAlerts = [...activeUnlinked, ...rest].slice(0, MAX_ALERTS);
+  }
+  saveAlerts(prunedAlerts);
   if (incidentsChanged) save(incidents);
 
   if (created > 0 && settings.notifications?.enabled && settings.notifications?.onFrameFlowAlert) {
@@ -1743,6 +1677,17 @@ app.get('/api/me', (req, res) => res.json({
 app.get('/api/portal-status', async (req, res) => {
   const status = await getPortalStatus();
   res.json(status);
+});
+app.get('/api/poll', async (req, res) => {
+  const portalStatus = await getPortalStatus();
+  const activeAlerts = loadAlerts().filter((a) => !a.dismissed && !a.linkedIncidentId);
+  res.json({
+    success: true,
+    version: APP_VERSION,
+    incidents: load(),
+    alerts: activeAlerts,
+    portalStatus,
+  });
 });
 app.post('/api/logout', authz.logout);
 app.get('/api/config', (req, res) => res.json({
@@ -2712,20 +2657,15 @@ app.get('/api/report/:id', (req, res) => {
 app.get('/api/archive', (req, res) => {
   const q = String(req.query?.q || '').trim().toLowerCase();
   const limit = Math.max(1, Math.min(500, parseInt(req.query?.limit, 10) || 100));
-  let rows = [];
-  try {
-    rows = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean).reverse()
-      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-    if (q) {
-      rows = rows.filter((inc) =>
-        `${inc.area || ''} ${inc.faultType || ''} ${inc.services || ''} ${inc.closedBy || ''} ${inc.startDate || ''} ${inc.endedAt || ''} ${inc.resolution || ''}`
-          .toLowerCase()
-          .includes(q)
-      );
-    }
-    rows = rows.slice(0, limit);
-  } catch {}
-  res.json(rows);
+  let rows = loadArchiveRows().reverse();
+  if (q) {
+    rows = rows.filter((inc) =>
+      `${inc.area || ''} ${inc.faultType || ''} ${inc.services || ''} ${inc.closedBy || ''} ${inc.startDate || ''} ${inc.endedAt || ''} ${inc.resolution || ''}`
+        .toLowerCase()
+        .includes(q)
+    );
+  }
+  res.json(rows.slice(0, limit));
 });
 
 // Felhanterare (t.ex. trasig JSON i request)
