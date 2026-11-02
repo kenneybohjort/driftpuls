@@ -62,10 +62,22 @@
         </select>
       </div>
 
-      <div>
-        <label class="lbl" for="area">Område / Nod / Gata</label>
-        <input type="text" id="area" list="nodeList" maxlength="80" placeholder="t.ex. Arbrå, Bollnäs C" class="field">
-        <datalist id="nodeList"></datalist>
+      <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+        <div class="sm:col-span-7">
+          <label class="lbl" for="area">Område / Nod / Gata</label>
+          <input type="text" id="area" list="nodeList" maxlength="80" placeholder="t.ex. Arbrå, Delar av Arbrå" class="field">
+          <datalist id="nodeList"></datalist>
+        </div>
+        <div class="sm:col-span-5">
+          <label class="lbl" for="scope">Omfattning (publik badge)</label>
+          <select id="scope" class="field">
+            <option value="">Ingen / Standard</option>
+            <option value="limited">📍 Begränsat delområde (1 acc)</option>
+            <option value="partial">⚠️ Flera delområden (flera acc)</option>
+            <option value="major">⚠️ Större delområde (del-dist)</option>
+            <option value="full">🚨 Hela området / Huvudnod</option>
+          </select>
+        </div>
       </div>
 
       <div>
@@ -124,8 +136,10 @@
             <h2 class="text-xs font-semibold uppercase tracking-wider text-fg2">📡 FrameFlow Larminkorg (Ej publicerade)</h2>
             <span id="alertsBadge" class="hidden text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-red-500/20 text-danger border border-red-500/30 animate-pulse">0</span>
           </div>
-          <div class="flex items-center gap-2">
-            <button data-action="simulateAlert" data-arg="switch" class="text-[11px] text-accent hover:underline font-medium" title="Skapa ett testlarm för switch i inkorgen">+ Testlarm</button>
+          <div class="flex flex-wrap items-center gap-2">
+            <button data-action="simulateAlert" data-arg="switch" class="text-[11px] text-accent hover:underline font-medium" title="Simulera 1 access-switch (arbra_acc_04)">+ 1 Acc</button>
+            <button data-action="simulateAlert" data-arg="multi_acc" class="text-[11px] text-amber-600 dark:text-amber-400 hover:underline font-medium" title="Simulera 10 access-switchar (arbra_acc_03–12)">+ 10 Acc</button>
+            <button data-action="simulateAlert" data-arg="dist" class="text-[11px] text-rose-600 dark:text-rose-400 hover:underline font-medium" title="Simulera dist-switch (arbra_dist_01)">+ Dist</button>
             <button id="dismissAllAlertsBtn" data-action="dismissAlert" data-arg="all" class="hidden text-[11px] text-faint hover:text-danger transition">Rensa alla</button>
             <button data-action="openSettings" class="text-[11px] text-faint hover:text-fg2 transition">⚙️ Inställningar</button>
           </div>
@@ -708,8 +722,10 @@ docker exec -it drift-admin node users.js remove anna</pre>
             <p class="text-xs text-muted">Skapar ett realistiskt hårdvarularm i Admins larminkorg (påverkar inte den publika driftportalen).</p>
           </div>
           <div class="flex flex-wrap gap-2">
-            <button data-action="simulateAlert" data-arg="switch" class="btn text-accent">🚨 Simulera Switch-larm (Arbrå)</button>
-            <button data-action="simulateAlert" data-arg="ups" class="btn text-amber-600 dark:text-amber-400">🔋 Simulera UPS-larm (Bollnäs C)</button>
+            <button data-action="simulateAlert" data-arg="switch" class="btn text-accent">🚨 1 Acc-switch (arbra_acc_04)</button>
+            <button data-action="simulateAlert" data-arg="multi_acc" class="btn text-amber-600 dark:text-amber-400">⚠️ 10 Acc-switchar (arbra_acc_03–12)</button>
+            <button data-action="simulateAlert" data-arg="dist" class="btn text-rose-600 dark:text-rose-400">🛑 Dist-switch (arbra_dist_01)</button>
+            <button data-action="simulateAlert" data-arg="ups" class="btn text-amber-600 dark:text-amber-400">🔋 UPS-larm (Bollnäs C)</button>
             <button data-action="simulateAlert" data-arg="ok" class="btn text-emerald-600 dark:text-emerald-400">✅ Simulera Återställning (OK)</button>
           </div>
         </div>
@@ -718,14 +734,19 @@ docker exec -it drift-admin node users.js remove anna</pre>
       <!-- Flik 2: Noder & Områden -->
       <div id="stab-nodes" class="space-y-4 hidden">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <p class="text-xs text-muted">När ett larm inkommer matchas enhetens namn mot sökorden nedan. Nodregistret ger även snabbval i fältet <em>Område / Nod</em> och förifyller kundantal i NIS2-rapporten.</p>
+          <div>
+            <p class="text-xs text-muted">När ett larm inkommer matchas enhetens namn mot sökorden nedan. Ange antal dist- och access-switchar per fiberbod för automatisk skalning av publik omfattning och kundpåverkan i NIS2.</p>
+            <p class="text-[11px] text-faint mt-0.5">💡 1 dist-switch rymmer max 24 acc-switchar. 1 acc-switch rymmer max 24 kunder.</p>
+          </div>
           <button data-action="addNode" class="btn text-accent shrink-0">+ Lägg till nod / område</button>
         </div>
         <div class="hidden sm:grid sm:grid-cols-12 gap-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
-          <div class="col-span-3">Område / Nodnamn</div>
+          <div class="col-span-2">Område / Nod</div>
           <div class="col-span-2">Verksamhet</div>
           <div class="col-span-3">FrameFlow-sökord / prefix</div>
-          <div class="col-span-2">Kunder (ca st)</div>
+          <div class="col-span-1" title="Totalt antal kunder i noden">Kunder</div>
+          <div class="col-span-1" title="Antal distributionsswitchar i fiberboden (1 dist-switch rymmer max 24 acc-switchar)">Dist-sw</div>
+          <div class="col-span-1" title="Antal faktiskt inkopplade access-switchar i fiberboden (1 acc-switch rymmer max 24 kunder)">Acc-sw (i bod)</div>
           <div class="col-span-2">Samhällsviktig</div>
         </div>
         <div id="nodesList" class="space-y-2"></div>

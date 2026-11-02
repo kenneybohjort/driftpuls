@@ -3,7 +3,7 @@
 let PUBLIC_URL = '';
 
 const $ = (id) => document.getElementById(id);
-const FIELDS = ['domain', 'statusType', 'area', 'faultType', 'startDate', 'startTime', 'ettrDate', 'ettr', 'techDetails', 'note'];
+const FIELDS = ['domain', 'statusType', 'area', 'scope', 'faultType', 'startDate', 'startTime', 'ettrDate', 'ettr', 'techDetails', 'note'];
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 // Verksamheter: [värde, visningstext?, planerat arbete?]
 const DOMAINS = {
@@ -32,8 +32,153 @@ let currentUserRole = 'admin';
 let myTotpEnabled = false;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const UI_VERSION = '2026.10.31.2';
+const UI_VERSION = '2026.11.02.1';
 let editUpdatedAt = null;
+
+function parseDeviceRole(device = '') {
+  const s = String(device || '').trim();
+  const distMatch = s.match(/^([a-z0-9åäö_-]+?)[_-]dist(?:[_-]?(\d+))?$/i);
+  if (distMatch) {
+    return { prefix: distMatch[1].toLowerCase(), role: 'dist', num: distMatch[2] ? parseInt(distMatch[2], 10) : null, rawNum: distMatch[2] || '', raw: s };
+  }
+  const accMatch = s.match(/^([a-z0-9åäö_-]+?)[_-]acc(?:[_-]?(\d+))?$/i);
+  if (accMatch) {
+    return { prefix: accMatch[1].toLowerCase(), role: 'acc', num: accMatch[2] ? parseInt(accMatch[2], 10) : null, rawNum: accMatch[2] || '', raw: s };
+  }
+  if (/ups|batteri|battery|rectifier|likriktare/i.test(s)) {
+    return { prefix: s.toLowerCase(), role: 'ups', num: null, rawNum: '', raw: s };
+  }
+  return { prefix: s.toLowerCase(), role: 'other', num: null, rawNum: '', raw: s };
+}
+
+function summarizeDevices(devices = []) {
+  const list = [...new Set((devices || []).map((d) => String(d || '').trim()).filter(Boolean))];
+  if (list.length === 0) return '';
+  if (list.length === 1) return list[0];
+  const parsed = list.map(parseDeviceRole);
+  const groups = new Map();
+  for (const p of parsed) {
+    const gKey = p.role === 'acc' || p.role === 'dist' ? `${p.prefix}_${p.role}` : `other:${p.raw}`;
+    if (!groups.has(gKey)) groups.set(gKey, []);
+    groups.get(gKey).push(p);
+  }
+  const parts = [];
+  for (const [, items] of groups) {
+    if (items.length === 1) {
+      parts.push(items[0].raw);
+      continue;
+    }
+    const first = items[0];
+    const withNums = items.filter((i) => i.num !== null).sort((a, b) => a.num - b.num);
+    if (withNums.length === items.length && (first.role === 'acc' || first.role === 'dist')) {
+      const minItem = withNums[0];
+      const maxItem = withNums[withNums.length - 1];
+      const padLen = Math.max(minItem.rawNum.length, maxItem.rawNum.length, 2);
+      const minStr = String(minItem.num).padStart(padLen, '0');
+      const maxStr = String(maxItem.num).padStart(padLen, '0');
+      const sep = (maxItem.num - minItem.num + 1) === withNums.length ? '–' : '..';
+      parts.push(`${first.prefix}_${first.role}_${minStr}${sep}${maxStr} (${items.length} st)`);
+    } else {
+      parts.push(`${items.slice(0, 3).map((i) => i.raw).join(', ')}${items.length > 3 ? ` +${items.length - 3} till` : ''}`);
+    }
+  }
+  return parts.join(', ');
+}
+
+const CUSTOMERS_PER_ACC = 24;
+const ACC_PER_DIST = 24;
+const MAX_CUSTOMERS_PER_DIST = ACC_PER_DIST * CUSTOMERS_PER_ACC; // 576
+
+function computeSwitchImpact(alertList = [], node = null) {
+  const items = Array.isArray(alertList) ? alertList.filter(Boolean) : [alertList].filter(Boolean);
+  const first = items[0] || {};
+  const baseArea = String(node?.name || first.area || 'Okänt område')
+    .replace(/\s*\(begränsat område\)\s*$/i, '')
+    .replace(/^Delar av\s+/i, '')
+    .trim();
+  const totalCustomers = Math.max(0, parseInt(node?.customers ?? first.customers, 10) || 0);
+  const distCount = Math.max(1, parseInt(node?.distCount ?? first.distCount, 10) || 1);
+  const accCount = Math.max(1, parseInt(node?.accCount ?? first.accCount, 10) || 24);
+
+  const roles = items.map((a) => parseDeviceRole(a.device || ''));
+  const downDist = roles.filter((r) => r.role === 'dist').length;
+  const downAcc = roles.filter((r) => r.role === 'acc').length;
+
+  let publicArea = baseArea;
+  let scope = '';
+  let techDetails = `Driftstörning i ${baseArea}. Felsökning pågår.`;
+  let fraction = 1;
+  let summaryLabel = '';
+  let estimatedCustomers = totalCustomers;
+
+  if (downDist >= distCount || downAcc >= accCount) {
+    publicArea = baseArea;
+    scope = 'full';
+    techDetails = `Driftstörning i nod som påverkar ${baseArea}. Felsökning pågår.`;
+    fraction = 1;
+    summaryLabel = downDist > 0
+      ? `${downDist}/${distCount} dist-switchar nere (hela noden)`
+      : `${downAcc}/${accCount} access-switchar nere`;
+    estimatedCustomers = totalCustomers > 0
+      ? totalCustomers
+      : accCount * CUSTOMERS_PER_ACC;
+  } else if (downDist > 0 && downDist < distCount) {
+    publicArea = `Delar av ${baseArea}`;
+    scope = 'major';
+    techDetails = `Driftstörning i nod som påverkar delar av ${baseArea}. Felsökning pågår.`;
+    fraction = Math.max(downDist / distCount, downAcc / accCount);
+    summaryLabel = `${downDist} av ${distCount} dist-switchar nere${downAcc ? ` (+${downAcc} acc)` : ''}`;
+    const maxByDistPorts = downDist * MAX_CUSTOMERS_PER_DIST;
+    estimatedCustomers = totalCustomers > 0
+      ? Math.min(totalCustomers, maxByDistPorts, Math.max(1, Math.round(totalCustomers * fraction)))
+      : Math.min(accCount * CUSTOMERS_PER_ACC, maxByDistPorts);
+  } else if (downAcc > 1) {
+    publicArea = `Delar av ${baseArea}`;
+    scope = 'partial';
+    techDetails = `Driftstörning som påverkar delar av ${baseArea}. Felsökning pågår.`;
+    fraction = Math.min(1, downAcc / accCount);
+    summaryLabel = `${downAcc} av ${accCount} access-switchar nere`;
+    const maxByAccPorts = downAcc * CUSTOMERS_PER_ACC;
+    estimatedCustomers = totalCustomers > 0
+      ? Math.min(totalCustomers, maxByAccPorts, Math.max(1, Math.round(totalCustomers * fraction)))
+      : maxByAccPorts;
+  } else if (downAcc === 1) {
+    publicArea = `${baseArea} (begränsat område)`;
+    scope = 'limited';
+    techDetails = `Driftstörning som berör ett begränsat antal fastigheter i ${baseArea}. Felsökning pågår.`;
+    fraction = Math.min(1, 1 / accCount);
+    summaryLabel = `1 access-switch nere (1/${accCount})`;
+    estimatedCustomers = totalCustomers > 0
+      ? Math.min(totalCustomers, CUSTOMERS_PER_ACC, Math.max(1, Math.round(totalCustomers * fraction)))
+      : CUSTOMERS_PER_ACC;
+  } else if (roles.some((r) => r.role === 'ups')) {
+    publicArea = baseArea;
+    scope = 'full';
+    techDetails = `Strömavbrott påverkar utrustning i ${baseArea}. Felsökning pågår.`;
+    fraction = 1;
+    summaryLabel = 'UPS / Kraftmatning';
+    estimatedCustomers = totalCustomers > 0 ? totalCustomers : 0;
+  } else {
+    estimatedCustomers = totalCustomers > 0
+      ? Math.max(1, Math.round(totalCustomers * fraction))
+      : 0;
+  }
+
+  return {
+    baseArea,
+    publicArea,
+    scope,
+    techDetails,
+    estimatedCustomers,
+    totalCustomers,
+    fraction,
+    downDist,
+    downAcc,
+    distCount,
+    accCount,
+    summaryLabel,
+  };
+}
 let overdueFirstId = null;
 let reopeningId = null;
 let editingNis2Id = null;
@@ -166,6 +311,7 @@ function resetForm() {
   $('statusType').selectedIndex = 0;
   applyDomain($('domain').value);
   $('area').value = '';
+  if ($('scope')) $('scope').value = '';
   $('startDate').value = todayISO();
   $('startTime').value = nowHHMM();
   $('ettrDate').value = '';
@@ -184,57 +330,92 @@ function unlinkAlert() {
   $('alertLinkBanner').classList.add('hidden');
 }
 
-function useAlertInForm(alertId) {
-  const al = alerts.find((a) => a.id === alertId);
-  if (!al) return;
+function findNodeMetaByName(nameOrDevice = '') {
+  const hay = String(nameOrDevice || '').toLowerCase();
+  if (!hay || !appSettings || !Array.isArray(appSettings.nodes)) return null;
+  for (const n of appSettings.nodes) {
+    const terms = [n.name, ...(Array.isArray(n.keywords) ? n.keywords : String(n.match || '').split(','))]
+      .map((s) => String(s || '').trim().toLowerCase())
+      .filter(Boolean);
+    if (terms.some((t) => hay.includes(t))) return n;
+  }
+  return null;
+}
+
+function useAlertGroupInForm(rawIds) {
+  const idList = Array.isArray(rawIds)
+    ? rawIds
+    : String(rawIds || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const idSet = new Set(idList);
+  const matched = alerts.filter((a) => idSet.has(a.id));
+  if (!matched.length) return;
+
+  const first = matched[0];
+  const nodeMeta = findNodeMetaByName(`${first.area || ''} ${first.device || ''}`);
+  const impact = computeSwitchImpact(matched, nodeMeta);
+  const devSummary = summarizeDevices(matched.map((a) => a.device));
+
   editUpdatedAt = null;
   $('editId').value = '';
-  $('alertId').value = al.id;
-  $('alertLinkText').textContent = `📡 Kopplat till FrameFlow: ${al.device} (${al.monitor})`;
+  $('alertId').value = matched.map((a) => a.id).join(',');
+  $('alertLinkText').textContent = `📡 Kopplat till FrameFlow: ${devSummary}${impact.estimatedCustomers ? ` (~${impact.estimatedCustomers} berörda kunder)` : ''}`;
   $('alertLinkBanner').classList.remove('hidden');
 
   let sd = todayISO();
   let st = nowHHMM();
-  if (al.createdAt) {
+  const earliest = matched
+    .map((a) => a.createdAt)
+    .filter(Boolean)
+    .sort()[0];
+  if (earliest) {
     try {
-      const p = Object.fromEntries(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(al.createdAt)).map((x) => [x.type, x.value]));
+      const p = Object.fromEntries(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(earliest)).map((x) => [x.type, x.value]));
       sd = `${p.year}-${p.month}-${p.day}`;
       st = `${p.hour}:${p.minute}`;
     } catch {}
   }
 
+  const noteText = matched.length > 1
+    ? `Skapat från ${matched.length} FrameFlow-larm (${devSummary}${impact.summaryLabel ? ` – ${impact.summaryLabel}` : ''}).`
+    : `Skapat från FrameFlow-larm (${first.device} / ${first.monitor}): ${first.message}`;
+
   setFields({
-    domain: al.domain || 'stadsnat',
+    domain: first.domain || 'stadsnat',
     statusType: 'Pågående Störning',
-    area: al.area || al.device,
-    faultType: al.faultType || 'Hårdvarufel',
-    services: al.services || 'Bredband, TV',
+    area: impact.publicArea || first.area || first.device,
+    scope: impact.scope || '',
+    faultType: first.faultType || 'Hårdvarufel',
+    services: first.services || 'Bredband, TV',
     startDate: sd,
     startTime: st,
     ettrDate: '',
     ettr: 'Ej fastställt',
-    techDetails: 'Felsökning av utrustning i nod pågår.',
-    note: `Skapat från FrameFlow-larm (${al.device} / ${al.monitor}): ${al.message}`,
+    techDetails: impact.techDetails || 'Felsökning av utrustning i nod pågår.',
+    note: noteText,
   });
-  $('formTitle').textContent = `Nytt ärende från larm: ${al.area}`;
+  $('formTitle').textContent = `Nytt ärende från larm: ${impact.publicArea}`;
   validate();
   generate();
   window.scrollTo({ top: 0, behavior: 'smooth' });
-  toast(`Larm för ${al.area} har fyllts i formuläret. Granska och klicka Publicera!`);
+  toast(`Larm (${devSummary}) har fyllts i som "${impact.publicArea}". Granska och klicka Publicera!`);
+}
+
+function useAlertInForm(alertId) {
+  useAlertGroupInForm([alertId]);
 }
 
 function editIncident(inc) {
   if (!inc) return;
   editUpdatedAt = inc.updatedAt || inc.createdAt || null;
   $('editId').value = inc.id;
-  $('alertId').value = inc.alertId || '';
+  $('alertId').value = Array.isArray(inc.alertIds) && inc.alertIds.length ? inc.alertIds.join(',') : (inc.alertId || '');
   if (inc.nmsDevice) {
     $('alertLinkText').textContent = `📡 Kopplat till FrameFlow-enhet: ${inc.nmsDevice}`;
     $('alertLinkBanner').classList.remove('hidden');
   } else {
     $('alertLinkBanner').classList.add('hidden');
   }
-  setFields({ ...inc, domain: inc.domain || 'stadsnat', startDate: inc.startDate || (inc.createdAt || '').slice(0, 10) || todayISO(), ettrDate: inc.ettrDate || '', note: '' });
+  setFields({ ...inc, domain: inc.domain || 'stadsnat', scope: inc.scope || '', startDate: inc.startDate || (inc.createdAt || '').slice(0, 10) || todayISO(), ettrDate: inc.ettrDate || '', note: '' });
   const tlHint = $('publicTimelineHint');
   if (tlHint) {
     const pubUpd = Array.isArray(inc.publicUpdates) ? inc.publicUpdates : [];
@@ -343,7 +524,7 @@ async function api(url, body) {
 }
 
 const fmtTs = (iso) => new Date(iso).toLocaleString('sv-SE', { timeZone: 'Europe/Stockholm', dateStyle: 'short', timeStyle: 'short' });
-const FIELD_LABEL = { domain: 'Verksamhet', kind: 'Typ', statusType: 'Status', area: 'Område', faultType: 'Typ av händelse', services: 'Tjänster', startDate: 'Startdatum', startTime: 'Starttid', ettrDate: 'Klartid, datum', ettr: 'Klartid', techDetails: 'Lägesrapport' };
+const FIELD_LABEL = { domain: 'Verksamhet', kind: 'Typ', statusType: 'Status', area: 'Område', scope: 'Omfattning', faultType: 'Typ av händelse', services: 'Tjänster', startDate: 'Startdatum', startTime: 'Starttid', ettrDate: 'Klartid, datum', ettr: 'Klartid', techDetails: 'Lägesrapport' };
 const openHist = new Set();
 let archive = [];
 const startOf = (inc) => `${inc.startDate || (inc.createdAt || '').slice(0, 10)} ${inc.startTime || ''}`.trim();
@@ -404,6 +585,9 @@ async function fetchIncidents() {
     const over = planned && endOf(inc) && now > endOf(inc);
     const activeNow = planned && !over && now >= startOf(inc);
     const nmsOk = Boolean(inc.nmsResolvedAt);
+    const totalNmsDevs = Array.isArray(inc.nmsDevices) ? inc.nmsDevices.length : 0;
+    const resolvedNmsDevs = Array.isArray(inc.nmsResolvedDevices) ? inc.nmsResolvedDevices.length : 0;
+    const partialNms = !nmsOk && totalNmsDevs > 1 && resolvedNmsDevs > 0;
     const warnBadge = over
       ? '<span class="inline-block bg-amber-500/20 text-amber-600 dark:text-amber-400 font-semibold px-2 py-0.5 rounded text-[10px] animate-pulse">⚠️ Sluttid passerad</span>'
       : activeNow
@@ -412,12 +596,18 @@ async function fetchIncidents() {
           ? '<span class="inline-block bg-card border border-line text-muted font-semibold px-2 py-0.5 rounded text-[10px]">📅 Kommande</span>'
           : '';
     const nmsBadge = nmsOk
-      ? `<span class="inline-block bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold px-2 py-0.5 rounded text-[10px]" title="FrameFlow rapporterade OK kl ${esc(fmtTs(inc.nmsResolvedAt))}">✅ Återställd i FrameFlow</span>`
-      : inc.nmsDevice
-        ? `<span class="inline-block bg-brand/15 text-accent font-mono px-1.5 py-0.5 rounded text-[10px]" title="Kopplad till FrameFlow-enhet">📡 ${esc(inc.nmsDevice)}</span>`
-        : '';
+      ? `<span class="inline-block bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold px-2 py-0.5 rounded text-[10px]" title="FrameFlow rapporterade OK kl ${esc(fmtTs(inc.nmsResolvedAt))}">✅ ${totalNmsDevs > 1 ? `Alla ${totalNmsDevs} enheter återställda i FrameFlow` : 'Återställd i FrameFlow'}</span>`
+      : partialNms
+        ? `<span class="inline-block bg-amber-500/20 text-amber-600 dark:text-amber-400 font-semibold px-2 py-0.5 rounded text-[10px]">⏳ ${resolvedNmsDevs} av ${totalNmsDevs} switchar åter online</span>`
+        : inc.nmsDevice
+          ? `<span class="inline-block bg-brand/15 text-accent font-mono px-1.5 py-0.5 rounded text-[10px]" title="Kopplad till FrameFlow-enhet">📡 ${esc(inc.nmsDevice)}</span>`
+          : '';
     const warn = over ? '<div class="text-[10px] text-amber-600 dark:text-amber-400 font-medium">Planerat slut har passerats och arbetet döljs för allmänheten (auto-arkiveras efter 60 min).</div>' : '';
-    const nmsInfo = nmsOk ? `<div class="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">Enheten (${esc(inc.nmsDevice || inc.area)}) är åter online enligt FrameFlow (${esc(fmtTs(inc.nmsResolvedAt))}). Redo att klarrapporteras och stängas.</div>` : '';
+    const nmsInfo = nmsOk
+      ? `<div class="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">Enhet(${esc(inc.nmsDevice || inc.area)}) är åter online enligt FrameFlow (${esc(fmtTs(inc.nmsResolvedAt))}). Redo att klarrapporteras och stängas.</div>`
+      : partialNms
+        ? `<div class="text-[10px] text-amber-600 dark:text-amber-400 font-medium">Delvis återställt i FrameFlow: ${resolvedNmsDevs} av ${totalNmsDevs} länkade switchar (${esc(inc.nmsDevice)}) svarar igen.</div>`
+        : '';
     const rowClass = over
       ? 'border-amber-500/50 bg-amber-500/5'
       : nmsOk
@@ -474,7 +664,8 @@ async function fetchAlerts() {
     box.innerHTML = '<p class="text-xs text-faint italic">Inga nya hårdvarularm från FrameFlow.</p>';
     return;
   }
-  box.innerHTML = activeAlerts.map((a) => {
+
+  const renderSingleAlert = (a, compact = false) => {
     const isResolved = Boolean(a.resolvedAt) || /^(ok|up)$/i.test(a.status || '');
     const isWarn = /warn/i.test(a.status || '');
     const sevBadge = isResolved
@@ -482,33 +673,102 @@ async function fetchAlerts() {
       : !isWarn
         ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-danger">KRITISKT LARM</span>'
         : '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-600 dark:text-amber-400">VARNING</span>';
+    const nodeMeta = findNodeMetaByName(`${a.area || ''} ${a.device || ''}`);
+    const impact = computeSwitchImpact([a], nodeMeta);
+    const roleTag = impact.summaryLabel
+      ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-soft text-fg2">${esc(impact.summaryLabel)}${impact.estimatedCustomers ? ` · ~${esc(impact.estimatedCustomers)} kunder` : ''}</span>`
+      : (a.customers ? `<span class="text-[10px] text-faint">~${esc(a.customers)} kunder i noden</span>` : '');
     return `
-    <div class="bg-inset border ${isResolved ? 'border-emerald-500/40' : 'border-red-500/40'} p-3 rounded-xl text-xs flex flex-wrap items-center justify-between gap-3">
+    <div class="bg-inset border ${isResolved ? 'border-emerald-500/40' : 'border-red-500/40'} ${compact ? 'p-2' : 'p-3'} rounded-xl text-xs flex flex-wrap items-center justify-between gap-3">
       <div class="min-w-0 flex-1">
         <div class="flex flex-wrap items-center gap-2">
           ${sevBadge}
           <span class="font-bold text-fg">${esc(a.area)}</span>
           <span class="font-mono text-[11px] text-accent">(${esc(a.device)}${a.monitor ? ' · ' + esc(a.monitor) : ''})</span>
+          ${roleTag}
         </div>
         <div class="text-[11px] text-fg2 mt-0.5">${esc(a.faultType)}${a.message ? ` — <span class="text-muted">${esc(a.message)}</span>` : ''}</div>
-        <div class="text-[10px] text-faint mt-0.5">Inkom: ${esc(fmtTs(a.createdAt || a.updatedAt))}${a.customers ? ` · ~${esc(a.customers)} kunder i noden` : ''}</div>
+        <div class="text-[10px] text-faint mt-0.5">Inkom: ${esc(fmtTs(a.createdAt || a.updatedAt))} · Förslag på publik rubrik: <strong>${esc(impact.publicArea)}</strong></div>
       </div>
       <div class="flex items-center gap-2 shrink-0">
         <button data-use-alert="${esc(a.id)}" class="bg-brand hover:bg-brand-dark text-white font-semibold px-3 py-1.5 rounded-lg text-xs transition">Använd i formulär</button>
         <button data-dismiss-alert="${esc(a.id)}" class="btn text-faint hover:text-danger" title="Avfärda larm">Avfärda</button>
       </div>
     </div>`;
-  }).join('');
+  };
+
+  // Gruppera pågående larm per nod/område om det finns >= 2 switchlarm i samma nod
+  const byArea = new Map();
+  for (const a of activeAlerts) {
+    const key = String(a.area || 'Okänt').toLowerCase();
+    if (!byArea.has(key)) byArea.set(key, []);
+    byArea.get(key).push(a);
+  }
+
+  const htmlBlocks = [];
+  for (const [, group] of byArea) {
+    const unresolved = group.filter((a) => !a.resolvedAt && !/^(ok|up)$/i.test(a.status || ''));
+    if (unresolved.length >= 2) {
+      const first = unresolved[0];
+      const nodeMeta = findNodeMetaByName(`${first.area || ''} ${first.device || ''}`);
+      const impact = computeSwitchImpact(unresolved, nodeMeta);
+      const devSummary = summarizeDevices(unresolved.map((a) => a.device));
+      const idsCsv = unresolved.map((a) => a.id).join(',');
+      htmlBlocks.push(`
+      <div class="bg-inset border-2 border-amber-500/60 p-3.5 rounded-xl text-xs space-y-2.5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-600 dark:text-amber-400">⚡ KLUSTERLARM (${unresolved.length} ENHETER)</span>
+              <span class="font-bold text-fg text-sm">${esc(first.area)}</span>
+              <span class="font-mono text-[11px] text-accent">${esc(devSummary)}</span>
+            </div>
+            <div class="text-[11px] text-fg2 mt-1">
+              Omfattning: <strong>${esc(impact.summaryLabel || `${unresolved.length} enheter`)}</strong>
+              &middot; Publik rubrik: <strong class="text-accent">${esc(impact.publicArea)}</strong>
+              ${impact.estimatedCustomers ? ` &middot; Beräknad kundpåverkan: <strong>~${esc(impact.estimatedCustomers)} av ${esc(impact.totalCustomers)} kunder</strong>` : ''}
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 shrink-0">
+            <button data-use-alert-group="${esc(idsCsv)}" class="bg-brand hover:bg-brand-dark text-white font-semibold px-3 py-1.5 rounded-lg text-xs transition shadow">Använd alla (${unresolved.length} st) i formulär</button>
+            <button data-dismiss-alert-group="${esc(idsCsv)}" class="btn text-faint hover:text-danger">Avfärda grupp</button>
+          </div>
+        </div>
+        <details class="text-[11px]">
+          <summary class="cursor-pointer select-none text-faint hover:text-fg2 font-medium">Visa enskilda enheter i klustret (${group.length} st)</summary>
+          <div class="space-y-1.5 pt-2">${group.map((a) => renderSingleAlert(a, true)).join('')}</div>
+        </details>
+      </div>`);
+    } else {
+      for (const a of group) htmlBlocks.push(renderSingleAlert(a, false));
+    }
+  }
+
+  box.innerHTML = htmlBlocks.join('');
 }
 
 async function dismissAlert(id) {
   try {
     await api('/api/alerts/dismiss', { id });
-    if ($('alertId').value === id || id === 'all') unlinkAlert();
+    if ($('alertId').value.split(',').includes(id) || id === 'all') unlinkAlert();
     await fetchAlerts();
     toast(id === 'all' ? 'Alla larm i inkorgen rensades.' : 'Larmet avfärdades.');
   } catch (e) {
     toast(`Kunde inte avfärda larm: ${e.message}`, false);
+  }
+}
+
+async function dismissAlertGroup(idsCsv) {
+  const ids = String(idsCsv || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) return;
+  try {
+    await api('/api/alerts/dismiss', { ids });
+    const currentLinked = new Set($('alertId').value.split(',').filter(Boolean));
+    if (ids.some((id) => currentLinked.has(id))) unlinkAlert();
+    await fetchAlerts();
+    toast(`${ids.length} larm i gruppen avfärdades.`);
+  } catch (e) {
+    toast(`Kunde inte avfärda larmgrupp: ${e.message}`, false);
   }
 }
 
@@ -519,8 +779,12 @@ async function simulateAlert(type) {
     await fetchIncidents();
     if (type === 'ok') {
       toast('Simulerade återställning (OK) från FrameFlow!');
+    } else if (type === 'multi_acc') {
+      toast('Simulerade 10 access-switchar (arbra_acc_03–12) i larminkorgen!');
+    } else if (type === 'dist') {
+      toast('Simulerade dist-switch (arbra_dist_01) i larminkorgen!');
     } else {
-      toast(`Testlarm skapat i larminkorgen (${type === 'ups' ? 'Bollnäs C – UPS' : 'Arbrå – Switch'})!`);
+      toast(`Testlarm skapat i larminkorgen (${type === 'ups' ? 'Bollnäs C – UPS' : 'arbra_acc_04 – Access-switch'})!`);
     }
   } catch (e) {
     toast(`Kunde inte simulera larm: ${e.message}`, false);
@@ -586,10 +850,14 @@ $('activeIncidentsList').addEventListener('click', (e) => {
 });
 
 $('alertsList').addEventListener('click', (e) => {
+  const useGroupBtn = e.target.closest('[data-use-alert-group]');
+  const disGroupBtn = e.target.closest('[data-dismiss-alert-group]');
   const useBtn = e.target.closest('[data-use-alert]');
   const disBtn = e.target.closest('[data-dismiss-alert]');
-  if (useBtn) useAlertInForm(useBtn.dataset.useAlert);
-  if (disBtn) dismissAlert(disBtn.dataset.dismissAlert);
+  if (useGroupBtn) useAlertGroupInForm(useGroupBtn.dataset.useAlertGroup);
+  else if (disGroupBtn) dismissAlertGroup(disGroupBtn.dataset.dismissAlertGroup);
+  else if (useBtn) useAlertInForm(useBtn.dataset.useAlert);
+  else if (disBtn) dismissAlert(disBtn.dataset.dismissAlert);
 });
 
 async function publish() {
@@ -603,7 +871,9 @@ async function publish() {
   const btn = $('publishBtn');
   btn.disabled = true;
   try {
-    const payload = { ...f, id: $('editId').value || null, alertId: $('alertId').value || '' };
+    const rawAlertId = $('alertId').value || '';
+    const alertIds = rawAlertId.split(',').map((s) => s.trim()).filter(Boolean);
+    const payload = { ...f, id: $('editId').value || null, alertId: alertIds[0] || '', alertIds };
     if (editUpdatedAt) payload.expectedUpdatedAt = editUpdatedAt;
     const res = await api('/api/publish', payload);
     editUpdatedAt = res.updatedAt || null;
@@ -894,7 +1164,7 @@ function renderNodesEditor(nodes) {
     const matchStr = Array.isArray(n.keywords) ? n.keywords.join(', ') : (n.match || '');
     return `
     <div class="node-row bg-inset border border-line p-2.5 rounded-xl grid grid-cols-1 sm:grid-cols-12 gap-2 items-center text-xs" data-idx="${idx}">
-      <div class="sm:col-span-3">
+      <div class="sm:col-span-2">
         <input type="text" class="field text-xs node-name" value="${esc(n.name || '')}" placeholder="t.ex. Arbrå">
       </div>
       <div class="sm:col-span-2">
@@ -906,8 +1176,14 @@ function renderNodesEditor(nodes) {
       <div class="sm:col-span-3">
         <input type="text" class="field font-mono text-xs node-keywords" value="${esc(matchStr)}" placeholder="arbra, nod-arbra">
       </div>
-      <div class="sm:col-span-2">
-        <input type="number" min="0" max="100000" class="field font-mono text-xs node-customers" value="${esc(n.customers ?? 0)}" placeholder="Antal kunder">
+      <div class="sm:col-span-1">
+        <input type="number" min="0" max="100000" class="field font-mono text-xs node-customers" value="${esc(n.customers ?? 0)}" placeholder="Kunder" title="Totalt antal kunder i noden">
+      </div>
+      <div class="sm:col-span-1">
+        <input type="number" min="1" max="100" class="field font-mono text-xs node-dist" value="${esc(n.distCount ?? 1)}" placeholder="1" title="Antal dist-switchar i fiberboden (1 dist-switch rymmer max 24 acc-switchar)">
+      </div>
+      <div class="sm:col-span-1">
+        <input type="number" min="1" max="500" class="field font-mono text-xs node-acc" value="${esc(n.accCount ?? 24)}" placeholder="24" title="Antal faktiskt inkopplade access-switchar i fiberboden (1 acc-switch rymmer max 24 kunder)">
       </div>
       <div class="sm:col-span-2 flex items-center justify-between gap-1">
         <div class="flex flex-wrap gap-1 text-[10px]">
@@ -924,14 +1200,21 @@ function renderNodesEditor(nodes) {
 
 function collectNodesFromEditor() {
   const rows = [...document.querySelectorAll('#nodesList .node-row')];
-  return rows.map((r, i) => ({
-    id: `node-${i + 1}`,
-    name: r.querySelector('.node-name').value.trim(),
-    domain: r.querySelector('.node-domain').value,
-    match: r.querySelector('.node-keywords').value.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean).join(', '),
-    customers: Math.max(0, parseInt(r.querySelector('.node-customers').value, 10) || 0),
-    critical: [...r.querySelectorAll('.node-crit:checked')].map((cb) => cb.value).join(', '),
-  })).filter((n) => n.name);
+  return rows.map((r, i) => {
+    const accCount = Math.max(1, parseInt(r.querySelector('.node-acc')?.value, 10) || 24);
+    const rawDist = Math.max(1, parseInt(r.querySelector('.node-dist')?.value, 10) || 1);
+    const distCount = Math.max(rawDist, Math.ceil(accCount / 24));
+    return {
+      id: `node-${i + 1}`,
+      name: r.querySelector('.node-name').value.trim(),
+      domain: r.querySelector('.node-domain').value,
+      match: r.querySelector('.node-keywords').value.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean).join(', '),
+      customers: Math.max(0, parseInt(r.querySelector('.node-customers').value, 10) || 0),
+      distCount,
+      accCount,
+      critical: [...r.querySelectorAll('.node-crit:checked')].map((cb) => cb.value).join(', '),
+    };
+  }).filter((n) => n.name);
 }
 
 function populateSettingsDialog() {
@@ -1628,7 +1911,7 @@ document.addEventListener('click', (e) => {
   else if (action === 'unlinkAlert') unlinkAlert();
   else if (action === 'addNode') {
     const current = collectNodesFromEditor();
-    current.push({ id: `node-${Date.now()}`, name: '', domain: 'stadsnat', keywords: [], customers: 100, critical: [] });
+    current.push({ id: `node-${Date.now()}`, name: '', domain: 'stadsnat', keywords: [], customers: 100, distCount: 1, accCount: 24, critical: [] });
     renderNodesEditor(current);
   }
 });
@@ -1642,6 +1925,19 @@ FIELDS.forEach((id) => {
   });
 });
 $('serviceBox')?.addEventListener('change', () => generate());
+$('nodesList')?.addEventListener('input', (e) => {
+  const accInput = e.target.closest('.node-acc');
+  if (!accInput) return;
+  const row = accInput.closest('.node-row');
+  const distInput = row?.querySelector('.node-dist');
+  if (!distInput) return;
+  const accVal = Math.max(1, parseInt(accInput.value, 10) || 1);
+  const minDist = Math.ceil(accVal / 24);
+  const curDist = Math.max(1, parseInt(distInput.value, 10) || 1);
+  if (curDist < minDist) {
+    distInput.value = String(minDist);
+  }
+});
 $('archiveSearch')?.addEventListener('input', () => renderArchiveList());
 $('restoreBackupFile')?.addEventListener('change', previewRestoreFile);
 $('auditSearch')?.addEventListener('input', () => loadAuditLog());

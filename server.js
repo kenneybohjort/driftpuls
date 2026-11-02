@@ -11,7 +11,7 @@ const PUBLIC_URL = process.env.PUBLIC_URL || '';
 const PORTAL_PORT = Number(process.env.PORTAL_PORT) || 3001;
 const ADMIN_USER = process.env.ADMIN_USER; // används bara för att skapa första kontot
 const ADMIN_PASS = process.env.ADMIN_PASS;
-const APP_VERSION = '2026.10.31.2'; // höj vid varje ändring: visas i sidans fot så man ser om server och sida är i takt
+const APP_VERSION = '2026.11.02.1'; // höj vid varje ändring: visas i sidans fot så man ser om server och sida är i takt
 const dataFile = path.join(DATA_DIR, 'storingar.json');
 const archiveFile = path.join(DATA_DIR, 'arkiv.jsonl'); // stängda ärenden (driftlogg)
 const auditFile = path.join(DATA_DIR, 'audit.jsonl'); // beständig revisionslogg
@@ -76,14 +76,14 @@ function save(list) {
 }
 
 const DEFAULT_NODES = [
-  { id: 'arbra', name: 'Arbrå', domain: 'stadsnat', match: 'arbra, arbrå', customers: 850, critical: 'care, municipal' },
-  { id: 'bollnas-c', name: 'Bollnäs C', domain: 'stadsnat', match: 'bol-c, bollnas, bollnäs, centrum', customers: 2400, critical: '112, care, municipal' },
-  { id: 'kilafors', name: 'Kilafors', domain: 'stadsnat', match: 'kilafors, kila', customers: 620, critical: 'care' },
-  { id: 'rengsjo', name: 'Rengsjö', domain: 'stadsnat', match: 'rengsjo, rengsjö', customers: 310, critical: '' },
-  { id: 'segersta', name: 'Segersta', domain: 'stadsnat', match: 'segersta, seg', customers: 240, critical: '' },
-  { id: 'vallsta', name: 'Vallsta', domain: 'stadsnat', match: 'vallsta, val', customers: 280, critical: '' },
-  { id: 'lottefors', name: 'Lottefors', domain: 'stadsnat', match: 'lottefors, lot', customers: 150, critical: '' },
-  { id: 'fv-bollnas', name: 'Fjärrvärme Bollnäs', domain: 'fjarrvarme', match: 'fv-, varme, värmeverk, panncentral', customers: 1200, critical: 'care, municipal, energy' },
+  { id: 'arbra', name: 'Arbrå', domain: 'stadsnat', match: 'arbra, arbrå', customers: 850, distCount: 2, accCount: 36, critical: 'care, municipal' },
+  { id: 'bollnas-c', name: 'Bollnäs C', domain: 'stadsnat', match: 'bol-c, bollnas, bollnäs, centrum', customers: 2400, distCount: 5, accCount: 100, critical: '112, care, municipal' },
+  { id: 'kilafors', name: 'Kilafors', domain: 'stadsnat', match: 'kilafors, kila', customers: 620, distCount: 2, accCount: 28, critical: 'care' },
+  { id: 'rengsjo', name: 'Rengsjö', domain: 'stadsnat', match: 'rengsjo, rengsjö', customers: 310, distCount: 1, accCount: 14, critical: '' },
+  { id: 'segersta', name: 'Segersta', domain: 'stadsnat', match: 'segersta, seg', customers: 240, distCount: 1, accCount: 11, critical: '' },
+  { id: 'vallsta', name: 'Vallsta', domain: 'stadsnat', match: 'vallsta, val', customers: 280, distCount: 1, accCount: 13, critical: '' },
+  { id: 'lottefors', name: 'Lottefors', domain: 'stadsnat', match: 'lottefors, lot', customers: 150, distCount: 1, accCount: 7, critical: '' },
+  { id: 'fv-bollnas', name: 'Fjärrvärme Bollnäs', domain: 'fjarrvarme', match: 'fv-, varme, värmeverk, panncentral', customers: 1200, distCount: 1, accCount: 1, critical: 'care, municipal, energy' },
 ];
 
 function loadSettings() {
@@ -93,6 +93,7 @@ function loadSettings() {
   }
   const ff = saved.frameflow || {};
   const notif = saved.notifications || {};
+  const rawNodes = Array.isArray(saved.nodes) && saved.nodes.length ? saved.nodes : DEFAULT_NODES;
   const settings = {
     frameflow: {
       pullEnabled: Boolean(ff.pullEnabled),
@@ -115,7 +116,15 @@ function loadSettings() {
       lastSentOk: notif.lastSentOk ?? null,
       lastSentMsg: String(notif.lastSentMsg || ''),
     },
-    nodes: Array.isArray(saved.nodes) && saved.nodes.length ? saved.nodes : DEFAULT_NODES,
+    nodes: rawNodes.map((n) => {
+      const accCount = Math.max(1, Math.min(500, parseInt(n.accCount, 10) || 24));
+      const rawDist = Math.max(1, Math.min(100, parseInt(n.distCount, 10) || 1));
+      return {
+        ...n,
+        distCount: Math.max(rawDist, Math.ceil(accCount / 24)),
+        accCount,
+      };
+    }),
   };
   if (!fs.existsSync(settingsFile)) saveSettings(settings);
   return settings;
@@ -187,6 +196,193 @@ function matchNode(searchStr, nodes) {
   return null;
 }
 
+// Identifiera enhetsroll utifrån namnsättning, t.ex. "arbra_acc_04", "arbra_dist_01", "bol-c-nod02-ups1"
+function parseDeviceRole(device = '') {
+  const s = String(device || '').trim();
+  const distMatch = s.match(/^([a-z0-9åäö_-]+?)[_-]dist(?:[_-]?(\d+))?$/i);
+  if (distMatch) {
+    return {
+      prefix: distMatch[1].toLowerCase(),
+      role: 'dist',
+      num: distMatch[2] ? parseInt(distMatch[2], 10) : null,
+      rawNum: distMatch[2] || '',
+      raw: s,
+    };
+  }
+  const accMatch = s.match(/^([a-z0-9åäö_-]+?)[_-]acc(?:[_-]?(\d+))?$/i);
+  if (accMatch) {
+    return {
+      prefix: accMatch[1].toLowerCase(),
+      role: 'acc',
+      num: accMatch[2] ? parseInt(accMatch[2], 10) : null,
+      rawNum: accMatch[2] || '',
+      raw: s,
+    };
+  }
+  if (/ups|batteri|battery|rectifier|likriktare/i.test(s)) {
+    return { prefix: s.toLowerCase(), role: 'ups', num: null, rawNum: '', raw: s };
+  }
+  return { prefix: s.toLowerCase(), role: 'other', num: null, rawNum: '', raw: s };
+}
+
+// Komprimera enhetslista för adminvy/NIS2, t.ex. ["arbra_acc_03", ..., "arbra_acc_12"] -> "arbra_acc_03–12 (10 st)"
+function summarizeDevices(devices = []) {
+  const list = [...new Set((devices || []).map((d) => String(d || '').trim()).filter(Boolean))];
+  if (list.length === 0) return '';
+  if (list.length === 1) return list[0];
+
+  const parsed = list.map(parseDeviceRole);
+  const groups = new Map();
+  for (const p of parsed) {
+    const gKey = p.role === 'acc' || p.role === 'dist' ? `${p.prefix}_${p.role}` : `other:${p.raw}`;
+    if (!groups.has(gKey)) groups.set(gKey, []);
+    groups.get(gKey).push(p);
+  }
+
+  const parts = [];
+  for (const [, items] of groups) {
+    if (items.length === 1) {
+      parts.push(items[0].raw);
+      continue;
+    }
+    const first = items[0];
+    const withNums = items.filter((i) => i.num !== null).sort((a, b) => a.num - b.num);
+    if (withNums.length === items.length && (first.role === 'acc' || first.role === 'dist')) {
+      const minItem = withNums[0];
+      const maxItem = withNums[withNums.length - 1];
+      const padLen = Math.max(minItem.rawNum.length, maxItem.rawNum.length, 2);
+      const minStr = String(minItem.num).padStart(padLen, '0');
+      const maxStr = String(maxItem.num).padStart(padLen, '0');
+      const isContiguous = (maxItem.num - minItem.num + 1) === withNums.length;
+      const sep = isContiguous ? '–' : '..';
+      parts.push(`${first.prefix}_${first.role}_${minStr}${sep}${maxStr} (${items.length} st)`);
+    } else {
+      parts.push(`${items.slice(0, 3).map((i) => i.raw).join(', ')}${items.length > 3 ? ` +${items.length - 3} till` : ''}`);
+    }
+  }
+  return parts.join(', ');
+}
+
+const VALID_SCOPES = ['', 'limited', 'partial', 'major', 'full'];
+const SCOPE_META = {
+  limited: {
+    label: '📍 Begränsat delområde',
+    style: 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/30',
+  },
+  partial: {
+    label: '⚠️ Flera delområden',
+    style: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30',
+  },
+  major: {
+    label: '⚠️ Större delområde',
+    style: 'bg-orange-500/15 text-orange-600 dark:text-orange-400 border border-orange-500/30',
+  },
+  full: {
+    label: '🚨 Hela området / Huvudnod',
+    style: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30',
+  },
+};
+
+const CUSTOMERS_PER_ACC = 24;
+const ACC_PER_DIST = 24;
+const MAX_CUSTOMERS_PER_DIST = ACC_PER_DIST * CUSTOMERS_PER_ACC; // 576
+
+// Beräkna publik områdesrubrik, omfattnings-badge, neutral lägesrapport och kundpåverkan (NIS2)
+function computeSwitchImpact(alertList = [], node = null) {
+  const items = Array.isArray(alertList) ? alertList.filter(Boolean) : [alertList].filter(Boolean);
+  const first = items[0] || {};
+  const baseArea = String(node?.name || first.area || 'Okänt område')
+    .replace(/\s*\(begränsat område\)\s*$/i, '')
+    .replace(/^Delar av\s+/i, '')
+    .trim();
+  const totalCustomers = Math.max(0, parseInt(node?.customers ?? first.customers, 10) || 0);
+  const distCount = Math.max(1, parseInt(node?.distCount ?? first.distCount, 10) || 1);
+  const accCount = Math.max(1, parseInt(node?.accCount ?? first.accCount, 10) || 24);
+
+  const roles = items.map((a) => parseDeviceRole(a.device || ''));
+  const downDist = roles.filter((r) => r.role === 'dist').length;
+  const downAcc = roles.filter((r) => r.role === 'acc').length;
+
+  let publicArea = baseArea;
+  let scope = '';
+  let techDetails = `Driftstörning i ${baseArea}. Felsökning pågår.`;
+  let fraction = 1;
+  let summaryLabel = '';
+  let estimatedCustomers = totalCustomers;
+
+  if (downDist >= distCount || downAcc >= accCount) {
+    // Samtliga dist-switchar i fiberboden (t.ex. 1 av 1) eller alla access-switchar nere -> Hela området
+    publicArea = baseArea;
+    scope = 'full';
+    techDetails = `Driftstörning i nod som påverkar ${baseArea}. Felsökning pågår.`;
+    fraction = 1;
+    summaryLabel = downDist > 0
+      ? `${downDist}/${distCount} dist-switchar nere (hela noden)`
+      : `${downAcc}/${accCount} access-switchar nere`;
+    estimatedCustomers = totalCustomers > 0
+      ? totalCustomers
+      : accCount * CUSTOMERS_PER_ACC;
+  } else if (downDist > 0 && downDist < distCount) {
+    // 1 av flera dist-switchar i större fiberbod nere -> Större delområde (max 24*24 = 576 kunder per dist-switch)
+    publicArea = `Delar av ${baseArea}`;
+    scope = 'major';
+    techDetails = `Driftstörning i nod som påverkar delar av ${baseArea}. Felsökning pågår.`;
+    fraction = Math.max(downDist / distCount, downAcc / accCount);
+    summaryLabel = `${downDist} av ${distCount} dist-switchar nere${downAcc ? ` (+${downAcc} acc)` : ''}`;
+    const maxByDistPorts = downDist * MAX_CUSTOMERS_PER_DIST;
+    estimatedCustomers = totalCustomers > 0
+      ? Math.min(totalCustomers, maxByDistPorts, Math.max(1, Math.round(totalCustomers * fraction)))
+      : Math.min(accCount * CUSTOMERS_PER_ACC, maxByDistPorts);
+  } else if (downAcc > 1) {
+    // Flera access-switchar nere i samma nod (t.ex. arbra_acc_03..12) -> Flera delområden (max 24 kunder per acc-switch)
+    publicArea = `Delar av ${baseArea}`;
+    scope = 'partial';
+    techDetails = `Driftstörning som påverkar delar av ${baseArea}. Felsökning pågår.`;
+    fraction = Math.min(1, downAcc / accCount);
+    summaryLabel = `${downAcc} av ${accCount} access-switchar nere`;
+    const maxByAccPorts = downAcc * CUSTOMERS_PER_ACC;
+    estimatedCustomers = totalCustomers > 0
+      ? Math.min(totalCustomers, maxByAccPorts, Math.max(1, Math.round(totalCustomers * fraction)))
+      : maxByAccPorts;
+  } else if (downAcc === 1) {
+    // En enskild access-switch nere (t.ex. arbra_acc_04) -> Begränsat delområde (max 24 kunder)
+    publicArea = `${baseArea} (begränsat område)`;
+    scope = 'limited';
+    techDetails = `Driftstörning som berör ett begränsat antal fastigheter i ${baseArea}. Felsökning pågår.`;
+    fraction = Math.min(1, 1 / accCount);
+    summaryLabel = `1 access-switch nere (1/${accCount})`;
+    estimatedCustomers = totalCustomers > 0
+      ? Math.min(totalCustomers, CUSTOMERS_PER_ACC, Math.max(1, Math.round(totalCustomers * fraction)))
+      : CUSTOMERS_PER_ACC;
+  } else if (roles.some((r) => r.role === 'ups')) {
+    publicArea = baseArea;
+    scope = 'full';
+    techDetails = `Strömavbrott påverkar utrustning i ${baseArea}. Felsökning pågår.`;
+    fraction = 1;
+    summaryLabel = 'UPS / Kraftmatning';
+    estimatedCustomers = totalCustomers > 0 ? totalCustomers : 0;
+  } else {
+    estimatedCustomers = totalCustomers > 0
+      ? Math.max(1, Math.round(totalCustomers * fraction))
+      : 0;
+  }
+
+  return {
+    baseArea,
+    publicArea,
+    scope,
+    techDetails,
+    estimatedCustomers,
+    totalCustomers,
+    fraction,
+    downDist,
+    downAcc,
+    distCount,
+    accCount,
+    summaryLabel,
+  };
+}
+
 const DOMAINS = ['stadsnat', 'fjarrvarme'];
 const DOMAIN_LABEL = { stadsnat: 'Stadsnät', fjarrvarme: 'Fjärrvärme' };
 const nowLocal = () => { // "ÅÅÅÅ-MM-DD HH:MM" i svensk tid, oberoende av språkinställning
@@ -199,25 +395,27 @@ const isTime = (s) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
 const CTRL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const text = (v, max) => String(v ?? '').replace(CTRL, '').trim().slice(0, max);
 
-const LIMITS = { domain: 20, kind: 12, area: 80, faultType: 60, services: 120, startDate: 10, startTime: 5, ettrDate: 10, ettr: 15, techDetails: 1000, statusType: 40 };
+const LIMITS = { domain: 20, kind: 12, area: 80, scope: 20, faultType: 60, services: 120, startDate: 10, startTime: 5, ettrDate: 10, ettr: 15, techDetails: 1000, statusType: 40 };
 
 function clean(body = {}) {
   const out = {};
   for (const [key, max] of Object.entries(LIMITS)) out[key] = text(body[key], max);
   if (!DOMAINS.includes(out.domain)) out.domain = 'stadsnat';
   if (!['incident', 'planned'].includes(out.kind)) out.kind = 'incident';
+  if (!VALID_SCOPES.includes(out.scope)) out.scope = '';
   if (!isDate(out.startDate)) out.startDate = todayLocal();
   if (out.ettrDate && !isDate(out.ettrDate)) out.ettrDate = '';
   return out;
 }
 
 // Fält som spåras i ärendets historik
-const TRACK = ['domain', 'kind', 'statusType', 'area', 'faultType', 'services', 'startDate', 'startTime', 'ettrDate', 'ettr', 'techDetails'];
+const TRACK = ['domain', 'kind', 'statusType', 'area', 'scope', 'faultType', 'services', 'startDate', 'startTime', 'ettrDate', 'ettr', 'techDetails'];
 const FIELD_LABEL = {
   domain: 'Verksamhet',
   kind: 'Typ',
   statusType: 'Status',
   area: 'Område',
+  scope: 'Omfattning',
   faultType: 'Typ av händelse',
   services: 'Tjänster',
   startDate: 'Startdatum',
@@ -378,7 +576,7 @@ Tillsynsmyndighet:        ${authority}
 Ärende-ID:                ${inc.id}
 Rapportör / Handläggare:  ${inc.closedBy || inc.updatedBy || inc.createdBy || 'Okänd'}
 Incidentens status:       Stängd / Åtgärdad
-Kategori:                 ${inc.kind === 'planned' ? 'Planerat underhåll / arbete' : 'Oplanerad driftstörning / Incident'}${inc.nmsDevice ? `\nLarmande enhet (NMS):     ${inc.nmsDevice}` : ''}
+Kategori:                 ${inc.kind === 'planned' ? 'Planerat underhåll / arbete' : 'Oplanerad driftstörning / Incident'}${inc.nmsDevice ? `\nLarmande enhet (NMS):     ${inc.nmsDevice}` : ''}${Array.isArray(inc.nmsDevices) && inc.nmsDevices.length > 1 ? `\nBerörda enheter (${inc.nmsDevices.length} st):  ${inc.nmsDevices.join(', ')}` : ''}
 
 ================================================================================
 AVSNITT 2: TIDSFÖRLOPP OCH LAGSTADGADE TIDSFRISTER (NIS2 / CSL)
@@ -568,6 +766,7 @@ function renderCyberReportHtml(inc, cssVersion = 0, jsVersion = 0) {
         <div><strong>Tillsynsmyndighet:</strong> ${escHtml(authority)}</div>
         <div><strong>Ärende-ID:</strong> <span class="font-mono">${escHtml(inc.id)}</span></div>
         <div><strong>Kategori:</strong> ${inc.kind === 'planned' ? 'Planerat underhåll / arbete' : 'Oplanerad driftstörning / Incident'}</div>
+        ${inc.nmsDevice ? `<div class="sm:col-span-2"><strong>Larmande enhet (NMS):</strong> <span class="font-mono">${escHtml(inc.nmsDevice)}</span>${Array.isArray(inc.nmsDevices) && inc.nmsDevices.length > 1 ? ` <span class="text-muted">(${escHtml(inc.nmsDevices.join(', '))})</span>` : ''}</div>` : ''}
       </div>
     </section>
 
@@ -882,11 +1081,15 @@ function renderPortal(all, recentOverride = null) {
     const badgeStyle = isPlanned && p === 'ongoing'
       ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30'
       : 'bg-brand/20 text-accent border border-brand/30';
+    const scopeInfo = !isPlanned && inc.scope && SCOPE_META[inc.scope] ? SCOPE_META[inc.scope] : null;
+    const scopeBadgeHtml = scopeInfo
+      ? `<span class="${scopeInfo.style} text-xs px-3 py-1 rounded-full font-medium">${esc(scopeInfo.label)}</span>`
+      : '';
     const start = whenText(inc.startDate || (inc.createdAt || '').slice(0, 10), inc.startTime);
     const end = endKey(inc) ? whenText(inc.ettrDate, inc.ettr) : inc.ettr || '–';
     return `
         <div class="bg-card border border-line border-l-4 ${TONE[isPlanned ? 'planned' : 'incident'].edge} rounded-2xl p-6 shadow-xl space-y-3">
-          <div class="flex flex-wrap gap-2"><span class="${badgeStyle} text-xs px-3 py-1 rounded-full font-medium">${esc(badge)}</span><span class="bg-soft text-fg2 text-xs px-3 py-1 rounded-full font-medium">${esc(DOMAIN_LABEL[inc.domain] || DOMAIN_LABEL.stadsnat)}</span></div>
+          <div class="flex flex-wrap gap-2"><span class="${badgeStyle} text-xs px-3 py-1 rounded-full font-medium">${esc(badge)}</span><span class="bg-soft text-fg2 text-xs px-3 py-1 rounded-full font-medium">${esc(DOMAIN_LABEL[inc.domain] || DOMAIN_LABEL.stadsnat)}</span>${scopeBadgeHtml}</div>
           <h3 class="text-xl font-bold text-fg">${esc(inc.faultType)}: ${esc(inc.area)}</h3>
           <p class="text-sm text-fg2">Påverkade tjänster: <strong class="text-fg">${esc(inc.services)}</strong></p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${box(isPlanned ? 'Planerad start' : 'Start', start)}${box(isPlanned ? 'Planerat slut' : 'Beräknad klartid', end)}</div>
@@ -1071,6 +1274,8 @@ function generatePublicSite() {
         domainLabel: DOMAIN_LABEL[i.domain] || 'Stadsnät',
         statusType: i.statusType,
         area: i.area,
+        scope: i.scope || '',
+        scopeLabel: SCOPE_META[i.scope]?.label || '',
         faultType: i.faultType,
         services: i.services,
         startDate: i.startDate,
@@ -1173,7 +1378,10 @@ function processFrameFlowPayload(payload, source = 'push') {
       ? (DOMAINS.includes(matchedNode.domain) ? matchedNode.domain : 'stadsnat')
       : (/fv-|fjärrvärme|fjarrvarme|värmeverk|panncentral/i.test(`${devName} ${monitor} ${message}`) ? 'fjarrvarme' : 'stadsnat');
     const customers = matchedNode ? (parseInt(matchedNode.customers, 10) || 0) : (parseInt(raw.customers, 10) || 0);
+    const distCount = matchedNode ? Math.max(1, parseInt(matchedNode.distCount, 10) || 1) : 1;
+    const accCount = matchedNode ? Math.max(1, parseInt(matchedNode.accCount, 10) || 24) : 24;
     const critical = matchedNode ? String(matchedNode.critical || '') : '';
+    const roleInfo = parseDeviceRole(devName);
 
     const combined = `${devName} ${monitor} ${message}`;
     let faultType = 'Hårdvarufel';
@@ -1205,6 +1413,9 @@ function processFrameFlowPayload(payload, source = 'push') {
         ex.faultType = faultType;
         ex.services = services;
         ex.customers = customers;
+        ex.distCount = distCount;
+        ex.accCount = accCount;
+        ex.deviceRole = roleInfo.role;
         ex.critical = critical;
         updated++;
       } else {
@@ -1213,6 +1424,7 @@ function processFrameFlowPayload(payload, source = 'push') {
           key,
           source,
           device: devName,
+          deviceRole: roleInfo.role,
           monitor,
           status: statusRaw,
           message: message || `${monitor} rapporterar ${statusRaw} på ${devName}`,
@@ -1221,6 +1433,8 @@ function processFrameFlowPayload(payload, source = 'push') {
           faultType,
           services,
           customers,
+          distCount,
+          accCount,
           critical,
           createdAt: now,
           updatedAt: now,
@@ -1230,9 +1444,16 @@ function processFrameFlowPayload(payload, source = 'push') {
         });
         created++;
       }
-      // Om ett aktivt ärende var markerat som återställt men enheten larmar igen
+      // Om ett aktivt ärende var markerat som återställt (eller delvis återställt) men enheten larmar igen
+      const devLow = devName.toLowerCase();
       for (const inc of incidents) {
-        if ((inc.alertKey === key || (inc.nmsDevice && inc.nmsDevice.toLowerCase() === devName.toLowerCase())) && inc.nmsResolvedAt) {
+        const inMulti = Array.isArray(inc.nmsDevices) && inc.nmsDevices.some((d) => String(d).toLowerCase() === devLow);
+        if (inMulti && Array.isArray(inc.nmsResolvedDevices)) {
+          const prevLen = inc.nmsResolvedDevices.length;
+          inc.nmsResolvedDevices = inc.nmsResolvedDevices.filter((d) => String(d).toLowerCase() !== devLow);
+          if (inc.nmsResolvedDevices.length !== prevLen) incidentsChanged = true;
+        }
+        if ((inc.alertKey === key || inMulti || (inc.nmsDevice && inc.nmsDevice.toLowerCase() === devLow)) && inc.nmsResolvedAt) {
           delete inc.nmsResolvedAt;
           incidentsChanged = true;
         }
@@ -1245,12 +1466,42 @@ function processFrameFlowPayload(payload, source = 'push') {
         alerts[existingIdx].updatedAt = now;
         resolved++;
       }
+      const devLow = devName.toLowerCase();
       for (const inc of incidents) {
+        const multiDevs = Array.isArray(inc.nmsDevices) ? inc.nmsDevices : [];
+        const inMulti = multiDevs.some((d) => String(d).toLowerCase() === devLow);
         const matchInc = inc.alertKey === key
-          || (existingIdx >= 0 && inc.alertId === alerts[existingIdx].id)
-          || (inc.nmsDevice && inc.nmsDevice.toLowerCase() === devName.toLowerCase());
-        if (matchInc && !inc.nmsResolvedAt) {
+          || (existingIdx >= 0 && (inc.alertId === alerts[existingIdx].id || (Array.isArray(inc.alertIds) && inc.alertIds.includes(alerts[existingIdx].id))))
+          || inMulti
+          || (inc.nmsDevice && inc.nmsDevice.toLowerCase() === devLow);
+
+        if (!matchInc) continue;
+
+        if (multiDevs.length > 1) {
+          const resolvedList = Array.isArray(inc.nmsResolvedDevices) ? [...inc.nmsResolvedDevices] : [];
+          const alreadyResolved = resolvedList.some((d) => String(d).toLowerCase() === devLow);
+          if (!alreadyResolved) {
+            const canonicalDev = multiDevs.find((d) => String(d).toLowerCase() === devLow) || devName;
+            resolvedList.push(canonicalDev);
+            inc.nmsResolvedDevices = resolvedList;
+            const allUp = resolvedList.length >= multiDevs.length;
+            if (allUp && !inc.nmsResolvedAt) {
+              inc.nmsResolvedAt = nowLocal();
+            }
+            inc.history = [...(inc.history || []), {
+              ts: now,
+              by: 'FrameFlow',
+              action: 'nms_ok',
+              note: allUp
+                ? `Samtliga ${multiDevs.length} länkade enheter återställda (senast ${devName}).`
+                : `Enhet ${devName} åter online (${resolvedList.length} av ${multiDevs.length} enheter återställda).`,
+            }].slice(-200);
+            incidentsChanged = true;
+            resolved++;
+          }
+        } else if (!inc.nmsResolvedAt) {
           inc.nmsResolvedAt = nowLocal();
+          inc.nmsResolvedDevices = [devName];
           inc.history = [...(inc.history || []), {
             ts: now,
             by: 'FrameFlow',
@@ -1570,14 +1821,20 @@ app.post('/api/settings', authz.requireAdmin, (req, res) => {
   }
 
   if (Array.isArray(req.body?.nodes)) {
-    const cleanNodes = req.body.nodes.map((n) => ({
-      id: text(n.id, 40) || crypto.randomUUID().slice(0, 8),
-      name: text(n.name, 80),
-      domain: DOMAINS.includes(n.domain) ? n.domain : 'stadsnat',
-      match: text(n.match, 200),
-      customers: Math.max(0, Math.min(100000, parseInt(n.customers, 10) || 0)),
-      critical: text(n.critical, 120),
-    })).filter((n) => n.name);
+    const cleanNodes = req.body.nodes.map((n) => {
+      const accCount = Math.max(1, Math.min(500, parseInt(n.accCount, 10) || 24));
+      const rawDist = Math.max(1, Math.min(100, parseInt(n.distCount, 10) || 1));
+      return {
+        id: text(n.id, 40) || crypto.randomUUID().slice(0, 8),
+        name: text(n.name, 80),
+        domain: DOMAINS.includes(n.domain) ? n.domain : 'stadsnat',
+        match: text(n.match, 200),
+        customers: Math.max(0, Math.min(100000, parseInt(n.customers, 10) || 0)),
+        distCount: Math.max(rawDist, Math.ceil(accCount / 24)),
+        accCount,
+        critical: text(n.critical, 120),
+      };
+    }).filter((n) => n.name);
     if (cleanNodes.length) current.nodes = cleanNodes;
   }
 
@@ -1981,6 +2238,8 @@ app.post('/api/backup/restore', authz.requireAdmin, (req, res) => {
             domain: DOMAINS.includes(n.domain) ? n.domain : 'stadsnat',
             match: text(n.match, 200),
             customers: Math.max(0, Math.min(100000, parseInt(n.customers, 10) || 0)),
+            distCount: Math.max(1, Math.min(100, parseInt(n.distCount, 10) || 1)),
+            accCount: Math.max(1, Math.min(500, parseInt(n.accCount, 10) || 24)),
             critical: text(n.critical, 120),
           })).filter((n) => n.name)
         : current.nodes,
@@ -2010,9 +2269,12 @@ app.get('/api/alerts', (req, res) => {
 
 app.post('/api/alerts/dismiss', (req, res) => {
   const id = String(req.body?.id || '');
+  const ids = Array.isArray(req.body?.ids) ? new Set(req.body.ids.map((x) => String(x || ''))) : null;
   const alerts = loadAlerts();
   if (id === 'all') {
     alerts.forEach((a) => { a.dismissed = true; });
+  } else if (ids && ids.size > 0) {
+    alerts.forEach((a) => { if (ids.has(a.id)) a.dismissed = true; });
   } else {
     const target = alerts.find((a) => a.id === id);
     if (target) target.dismissed = true;
@@ -2062,18 +2324,57 @@ app.post('/api/frameflow/simulate', (req, res) => {
       status: 'Critical',
       message: 'UPS på batteridrift (Mains AC Power Lost). Beräknad batteritid: 42 min.',
     };
-  } else if (type === 'ok') {
-    // Återställ aktiva testlarm / enheter
-    sample = [
-      { device: 'arbra-nod01-sw1', monitor: 'SNMP Ping & Uplink Status', status: 'OK', message: 'Kontakt återställd (0% packet loss).' },
-      { device: 'bol-c-nod02-ups1', monitor: 'SNMP UPS Power & Battery Status', status: 'OK', message: 'Nätspänning återställd (On-Line).' },
-    ];
-  } else {
+  } else if (type === 'multi_acc') {
+    sample = Array.from({ length: 10 }, (_, idx) => {
+      const nr = String(idx + 3).padStart(2, '0');
+      return {
+        device: `arbra_acc_${nr}`,
+        monitor: 'SNMP Ping & Uplink Status',
+        status: 'Critical',
+        message: `Ingen kontakt med access-switch arbra_acc_${nr} i Arbrå (100% packet loss).`,
+      };
+    });
+  } else if (type === 'dist') {
     sample = {
-      device: 'arbra-nod01-sw1',
+      device: 'arbra_dist_01',
       monitor: 'SNMP Ping & Uplink Status',
       status: 'Critical',
-      message: 'Ingen kontakt med access-switch i nodhus Arbrå (100% packet loss).',
+      message: 'Ingen kontakt med distributionsswitch arbra_dist_01 i fiberbod Arbrå (100% packet loss).',
+    };
+  } else if (type === 'ok') {
+    // Återställ samtliga aktiva larm och länkade enheter i pågående ärenden
+    const activeAlerts = loadAlerts().filter((a) => !a.dismissed && !a.resolvedAt);
+    const activeIncs = load();
+    const okMap = new Map();
+    const addOk = (device, monitor) => {
+      if (!device) return;
+      const m = monitor || 'SNMP Ping & Uplink Status';
+      okMap.set(`${device.toLowerCase()}::${m.toLowerCase()}`, {
+        device,
+        monitor: m,
+        status: 'OK',
+        message: 'Kontakt återställd (0% packet loss).',
+      });
+    };
+    for (const a of activeAlerts) addOk(a.device, a.monitor);
+    for (const inc of activeIncs) {
+      if (Array.isArray(inc.nmsDevices)) {
+        for (const d of inc.nmsDevices) addOk(d, 'SNMP Ping & Uplink Status');
+      } else if (inc.nmsDevice) {
+        addOk(inc.nmsDevice, inc.alertKey ? inc.alertKey.split('::')[1] : 'SNMP Ping & Uplink Status');
+      }
+    }
+    addOk('arbra_acc_04', 'SNMP Ping & Uplink Status');
+    addOk('arbra_dist_01', 'SNMP Ping & Uplink Status');
+    addOk('arbra-nod01-sw1', 'SNMP Ping & Uplink Status');
+    addOk('bol-c-nod02-ups1', 'SNMP UPS Power & Battery Status');
+    sample = [...okMap.values()];
+  } else {
+    sample = {
+      device: 'arbra_acc_04',
+      monitor: 'SNMP Ping & Uplink Status',
+      status: 'Critical',
+      message: 'Ingen kontakt med access-switch arbra_acc_04 i Arbrå (100% packet loss).',
     };
   }
   const stats = processFrameFlowPayload(sample, 'sim');
@@ -2091,7 +2392,9 @@ app.post('/api/publish', (req, res) => {
   if (data.ettrDate && `${data.ettrDate} ${data.ettr}` < `${data.startDate} ${data.startTime}`) return bad('Klartiden kan inte vara före starttiden.');
 
   const note = text(req.body?.note, 500); // intern anteckning, sparas bara i historiken
-  const alertId = text(req.body?.alertId, 40);
+  const rawAlertIds = Array.isArray(req.body?.alertIds)
+    ? req.body.alertIds.map((x) => text(x, 40)).filter(Boolean)
+    : String(req.body?.alertId || '').split(',').map((x) => text(x, 40)).filter(Boolean);
   const rawId = String(req.body?.id ?? '');
   const id = /^[\w-]{1,40}$/.test(rawId) ? rawId : crypto.randomUUID();
   const now = new Date().toISOString();
@@ -2111,25 +2414,37 @@ app.post('/api/publish', (req, res) => {
     });
   }
 
-  // Koppla larm från FrameFlow och/eller noddata
+  // Koppla larm från FrameFlow (enskild switch eller grupp av switchar) och/eller noddata
   const settings = loadSettings();
-  const matchedNode = matchNode(data.area, settings.nodes);
+  let matchedNode = matchNode(data.area, settings.nodes);
   let extraMeta = {};
   if (matchedNode) {
     extraMeta.customers = matchedNode.customers || 0;
     extraMeta.critical = matchedNode.critical || '';
   }
-  if (alertId) {
+  if (rawAlertIds.length > 0) {
     const alerts = loadAlerts();
-    const al = alerts.find((a) => a.id === alertId);
-    if (al) {
-      al.linkedIncidentId = id;
+    const idSet = new Set(rawAlertIds);
+    const matchedAlerts = alerts.filter((a) => idSet.has(a.id));
+    if (matchedAlerts.length > 0) {
+      for (const al of matchedAlerts) {
+        al.linkedIncidentId = id;
+      }
       saveAlerts(alerts);
-      extraMeta.alertId = al.id;
-      extraMeta.alertKey = al.key;
-      extraMeta.nmsDevice = al.device;
-      if (al.customers) extraMeta.customers = al.customers;
-      if (al.critical) extraMeta.critical = al.critical;
+      if (!matchedNode) {
+        matchedNode = matchNode(`${matchedAlerts[0].area} ${matchedAlerts[0].device}`, settings.nodes);
+      }
+      const impact = computeSwitchImpact(matchedAlerts, matchedNode);
+      const nmsDevices = [...new Set(matchedAlerts.map((a) => a.device).filter(Boolean))];
+      extraMeta.alertId = matchedAlerts[0].id;
+      extraMeta.alertIds = matchedAlerts.map((a) => a.id);
+      extraMeta.alertKey = matchedAlerts[0].key;
+      extraMeta.nmsDevices = nmsDevices;
+      extraMeta.nmsDevice = summarizeDevices(nmsDevices);
+      extraMeta.nmsResolvedDevices = [];
+      extraMeta.customers = impact.estimatedCustomers || matchedAlerts[0].customers || extraMeta.customers || 0;
+      if (matchedAlerts[0].critical) extraMeta.critical = matchedAlerts[0].critical;
+      if (!data.scope && impact.scope) data.scope = impact.scope;
     }
   }
 
@@ -2196,11 +2511,15 @@ app.post('/api/close', (req, res) => {
   } catch (e) {
     console.error('Kunde inte spara incidentrapport:', e);
   }
-  // Om ärendet var kopplat till ett FrameFlow-larm, markera larmet som avfärdat/hanterat
-  if (inc.alertId || inc.alertKey) {
+  // Om ärendet var kopplat till ett eller flera FrameFlow-larm, markera dem som avfärdade/hanterade
+  if (inc.alertId || inc.alertKey || (Array.isArray(inc.alertIds) && inc.alertIds.length) || (Array.isArray(inc.nmsDevices) && inc.nmsDevices.length)) {
     const alerts = loadAlerts();
+    const idSet = new Set([...(Array.isArray(inc.alertIds) ? inc.alertIds : []), ...(inc.alertId ? [inc.alertId] : [])]);
+    const devSet = new Set((Array.isArray(inc.nmsDevices) ? inc.nmsDevices : []).map((d) => String(d).toLowerCase()));
     alerts.forEach((a) => {
-      if (a.id === inc.alertId || a.key === inc.alertKey) a.dismissed = true;
+      if (idSet.has(a.id) || a.key === inc.alertKey || a.linkedIncidentId === id || (a.device && devSet.has(a.device.toLowerCase()))) {
+        a.dismissed = true;
+      }
     });
     saveAlerts(alerts);
   }
@@ -2271,6 +2590,7 @@ app.post('/api/reopen', (req, res) => {
   delete activeInc.resolution;
   delete activeInc.nis2;
   delete activeInc.nmsResolvedAt;
+  if (Array.isArray(activeInc.nmsDevices)) activeInc.nmsResolvedDevices = [];
 
   const incidents = load();
   const existingIdx = incidents.findIndex((i) => i.id === id);
@@ -2442,6 +2762,9 @@ module.exports = {
   loadRecentlyResolved,
   extractFrameFlowItems,
   processFrameFlowPayload,
+  parseDeviceRole,
+  summarizeDevices,
+  computeSwitchImpact,
   autoArchiveCompletedPlanned,
   cleanupFrameFlowRateLimits,
   ffAuthFails,

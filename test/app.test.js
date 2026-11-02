@@ -23,6 +23,9 @@ const {
   renderPortal,
   extractFrameFlowItems,
   processFrameFlowPayload,
+  parseDeviceRole,
+  summarizeDevices,
+  computeSwitchImpact,
   autoArchiveCompletedPlanned,
   cleanupFrameFlowRateLimits,
   ffAuthFails,
@@ -781,4 +784,171 @@ test('14. Punkt 5: Roller (admin/tekniker), TOTP 2FA-flöde och sökbar revision
   assert.equal(auditSearchJson.success, true);
   assert.ok(auditSearchJson.entries.length >= 2);
   assert.ok(auditSearchJson.entries.every((e) => e.id === 'tech-inc-1'));
+});
+
+test('15. Smart hantering av FrameFlow switch-larm (1 acc, 10 acc, 1 dist, flera dist & delvis återställning)', async () => {
+  // 1. Enhetsroll och sammanfattning av switch-serier
+  assert.deepEqual(parseDeviceRole('arbra_acc_04'), {
+    prefix: 'arbra',
+    role: 'acc',
+    num: 4,
+    rawNum: '04',
+    raw: 'arbra_acc_04',
+  });
+  assert.deepEqual(parseDeviceRole('arbra_dist_01'), {
+    prefix: 'arbra',
+    role: 'dist',
+    num: 1,
+    rawNum: '01',
+    raw: 'arbra_dist_01',
+  });
+
+  const tenAccNames = Array.from({ length: 10 }, (_, i) => `arbra_acc_${String(i + 3).padStart(2, '0')}`);
+  assert.equal(summarizeDevices(tenAccNames), 'arbra_acc_03–12 (10 st)');
+
+  // 2. Beräkning av publik omfattning och kundpåverkan enligt 24-portars switch-arkitektur (utan ordet "Omfattande")
+  const arbraNode = { name: 'Arbrå', customers: 850, distCount: 1, accCount: 24 };
+  const bolNode = { name: 'Bollnäs C', customers: 2400, distCount: 2, accCount: 48 };
+  const smallHutNode = { name: 'Liten bod', customers: 75, distCount: 1, accCount: 4 };
+
+  // 1 access-switch kan aldrig överstiga 24 kunder (även om 850/24 = 35)
+  const singleAccImpact = computeSwitchImpact([{ device: 'arbra_acc_04', area: 'Arbrå' }], arbraNode);
+  assert.equal(singleAccImpact.publicArea, 'Arbrå (begränsat område)');
+  assert.equal(singleAccImpact.scope, 'limited');
+  assert.equal(singleAccImpact.estimatedCustomers, 24);
+  assert.ok(!/omfattande/i.test(singleAccImpact.techDetails));
+
+  // 10 access-switchar kan aldrig överstiga 10 * 24 = 240 kunder
+  const multiAccImpact = computeSwitchImpact(tenAccNames.map((d) => ({ device: d, area: 'Arbrå' })), arbraNode);
+  assert.equal(multiAccImpact.publicArea, 'Delar av Arbrå');
+  assert.equal(multiAccImpact.scope, 'partial');
+  assert.equal(multiAccImpact.estimatedCustomers, 240);
+  assert.ok(!/omfattande/i.test(multiAccImpact.techDetails));
+
+  // Liten bod (1 dist, 4 acc, 75 kunder): 1 acc -> limited (19 kunder), 2 acc -> partial (38 kunder), 4 acc -> full (75 kunder)
+  const small1Acc = computeSwitchImpact([{ device: 'bod_acc_01', area: 'Liten bod' }], smallHutNode);
+  assert.equal(small1Acc.scope, 'limited');
+  assert.equal(small1Acc.estimatedCustomers, 19);
+
+  const small2Acc = computeSwitchImpact([{ device: 'bod_acc_01' }, { device: 'bod_acc_02' }], smallHutNode);
+  assert.equal(small2Acc.scope, 'partial');
+  assert.equal(small2Acc.estimatedCustomers, 38);
+
+  const smallAllAcc = computeSwitchImpact(
+    ['bod_acc_01', 'bod_acc_02', 'bod_acc_03', 'bod_acc_04'].map((d) => ({ device: d })),
+    smallHutNode
+  );
+  assert.equal(smallAllAcc.scope, 'full');
+  assert.equal(smallAllAcc.estimatedCustomers, 75);
+
+  const singleDistIn1DistHut = computeSwitchImpact([{ device: 'arbra_dist_01', area: 'Arbrå' }], arbraNode);
+  assert.equal(singleDistIn1DistHut.publicArea, 'Arbrå');
+  assert.equal(singleDistIn1DistHut.scope, 'full');
+  assert.equal(singleDistIn1DistHut.estimatedCustomers, 850); // 100% av noden
+  assert.ok(!/omfattande/i.test(singleDistIn1DistHut.techDetails));
+
+  // 1 av 2 dist-switchar nere i stor bod: max 24 * 24 = 576 kunder per dist-switch
+  const singleDistIn2DistHut = computeSwitchImpact([{ device: 'bol-c_dist_01', area: 'Bollnäs C' }], bolNode);
+  assert.equal(singleDistIn2DistHut.publicArea, 'Delar av Bollnäs C');
+  assert.equal(singleDistIn2DistHut.scope, 'major');
+  assert.equal(singleDistIn2DistHut.estimatedCustomers, 576);
+  assert.ok(!/omfattande/i.test(singleDistIn2DistHut.techDetails));
+
+  // 3. Simulera 10 access-switchar (arbra_acc_03..12) och publicera som ETT klusterärende
+  const adminLogin = await fetch(`${baseUrl}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+    body: JSON.stringify({ username: 'testadmin', password: 'testpassword12345' }),
+  });
+  assert.equal(adminLogin.status, 200);
+  const adminCookie = (adminLogin.headers.get('set-cookie') || '').split(';')[0];
+  const adminHeaders = {
+    'Content-Type': 'application/json',
+    Origin: baseUrl,
+    Cookie: adminCookie,
+  };
+  await fetch(`${baseUrl}/api/alerts/dismiss`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({ id: 'all' }),
+  });
+
+  const simRes = await fetch(`${baseUrl}/api/frameflow/simulate`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({ type: 'multi_acc' }),
+  });
+  assert.equal(simRes.status, 200);
+  const simJson = await simRes.json();
+  assert.equal(simJson.alerts.length, 10);
+
+  const alertIds = simJson.alerts.map((a) => a.id);
+  const pubRes = await fetch(`${baseUrl}/api/publish`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      id: 'cluster-arbra-10',
+      domain: 'stadsnat',
+      statusType: 'Pågående Störning',
+      area: multiAccImpact.publicArea,
+      scope: multiAccImpact.scope,
+      faultType: 'Hårdvarufel',
+      services: 'Bredband, TV',
+      startDate: '2026-10-25',
+      startTime: '10:00',
+      ettr: '14:00',
+      techDetails: multiAccImpact.techDetails,
+      alertIds,
+    }),
+  });
+  assert.equal(pubRes.status, 200);
+
+  // Alla 10 larm ska nu vara länkade och borta ur olästa larminkorgen
+  const remainingAlertsRes = await fetch(`${baseUrl}/api/alerts`, { headers: adminHeaders });
+  const remainingAlerts = await remainingAlertsRes.json();
+  assert.equal(remainingAlerts.length, 0);
+
+  // Kontrollera ärendets metadata och publik rendering (inga switchnamn läcker publikt)
+  const incRes = await fetch(`${baseUrl}/api/incidents`, { headers: adminHeaders });
+  const incs = await incRes.json();
+  const clusterInc = incs.find((i) => i.id === 'cluster-arbra-10');
+  assert.ok(clusterInc);
+  assert.equal(clusterInc.nmsDevice, 'arbra_acc_03–12 (10 st)');
+  assert.equal(clusterInc.nmsDevices.length, 10);
+  assert.equal(clusterInc.customers, 236); // round(850 * 10 / 36) = 236 (<= 10 * 24 = 240)
+  assert.equal(clusterInc.scope, 'partial');
+
+  const portalHtml = renderPortal([clusterInc], []);
+  assert.ok(portalHtml.includes('Delar av Arbrå'));
+  assert.ok(portalHtml.includes('⚠️ Flera delområden'));
+  assert.ok(!portalHtml.includes('arbra_acc_'));
+  assert.ok(!/omfattande/i.test(portalHtml));
+
+  // 4. Delvis återställning (5 av 10 switchar rapporterar OK) -> ärendet ska EJ ha nmsResolvedAt ännu
+  const halfOkPayload = tenAccNames.slice(0, 5).map((d) => ({
+    device: d,
+    monitor: 'SNMP Ping & Uplink Status',
+    status: 'OK',
+    message: 'Ping OK',
+  }));
+  processFrameFlowPayload(halfOkPayload, 'push');
+
+  const incsAfterHalf = await (await fetch(`${baseUrl}/api/incidents`, { headers: adminHeaders })).json();
+  const halfInc = incsAfterHalf.find((i) => i.id === 'cluster-arbra-10');
+  assert.equal(halfInc.nmsResolvedDevices.length, 5);
+  assert.equal(Boolean(halfInc.nmsResolvedAt), false);
+
+  // 5. Resterande 5 switchar rapporterar OK -> nu är alla 10/10 uppe och nmsResolvedAt sätts!
+  const restOkPayload = tenAccNames.slice(5).map((d) => ({
+    device: d,
+    monitor: 'SNMP Ping & Uplink Status',
+    status: 'OK',
+    message: 'Ping OK',
+  }));
+  processFrameFlowPayload(restOkPayload, 'push');
+
+  const incsAfterAll = await (await fetch(`${baseUrl}/api/incidents`, { headers: adminHeaders })).json();
+  const fullInc = incsAfterAll.find((i) => i.id === 'cluster-arbra-10');
+  assert.equal(fullInc.nmsResolvedDevices.length, 10);
+  assert.ok(fullInc.nmsResolvedAt);
 });
