@@ -112,10 +112,27 @@
       <div>
         <label class="lbl" for="techDetails">Lägesrapport (visas publikt på portalen)</label>
         <textarea id="techDetails" rows="3" maxlength="1000" placeholder="Ex: Tekniker är på plats. Skriv inget internt – texten är publik." class="field resize-none"></textarea>
-        <details id="publicTimelineHint" class="hidden mt-2 bg-inset border border-line rounded-xl px-3 py-2 text-[11px] text-fg2">
-          <summary id="publicTimelineSummary" class="cursor-pointer select-none font-semibold text-accent">🕒 Publik tidslinje på portalen</summary>
-          <ul id="publicTimelineList" class="mt-2 space-y-1.5 border-l-2 border-line pl-2.5 text-[11px]"></ul>
-        </details>
+        <div id="editTimelineBox" class="hidden mt-2 p-3 rounded-xl bg-inset border border-line space-y-2.5 text-xs">
+          <div class="font-semibold text-fg2">Hur ska ändringen sparas på driftportalen?</div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <label class="chk !p-2 cursor-pointer">
+              <input type="radio" name="timelineMode" id="tlModeReplace" value="replace" class="accent-brand" checked>
+              <span>✏️ <strong>Ändra aktuell lägesrapport</strong><span class="block text-[10px] text-faint">Uppdaterar texten direkt utan ny tidslinje</span></span>
+            </label>
+            <label class="chk !p-2 cursor-pointer">
+              <input type="radio" name="timelineMode" id="tlModeAppend" value="append" class="accent-brand">
+              <span>🕒 <strong>Ny uppdatering i tidslinjen</strong><span class="block text-[10px] text-faint">Lägger till ett nytt tidsstämplat steg</span></span>
+            </label>
+          </div>
+          <div id="tlStepTextWrap" class="hidden pt-1">
+            <label class="lbl" for="timelineStepText">Text till nya steget i tidslinjen (valfritt)</label>
+            <input type="text" id="timelineStepText" maxlength="1000" placeholder="Lämna tomt för att använda Lägesrapporten ovan, eller skriv t.ex. 'Tekniker på plats'" class="field text-xs">
+          </div>
+          <details id="publicTimelineHint" class="hidden pt-1 border-t border-line text-[11px] text-fg2" open>
+            <summary id="publicTimelineSummary" class="cursor-pointer select-none font-semibold text-accent">🕒 Publik tidslinje på portalen</summary>
+            <ul id="publicTimelineList" class="mt-2 space-y-1.5 border-l-2 border-line pl-2.5 text-[11px]"></ul>
+          </details>
+        </div>
       </div>
 
       <div>

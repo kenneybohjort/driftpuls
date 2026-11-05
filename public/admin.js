@@ -25,6 +25,7 @@ const TABS = [
   ['internal', 'Intern Rapport', 'För NOC och driftlogg', 'Kopiera Rapport', 'outInternal'],
 ];
 let incidents = [];
+let recentlyResolved = [];
 let alerts = [];
 let appSettings = { frameflow: {}, notifications: {}, nodes: [] };
 let currentUser = '';
@@ -32,8 +33,10 @@ let currentUserRole = 'admin';
 let myTotpEnabled = false;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const UI_VERSION = '2026.11.02.2';
+const UI_VERSION = '2026.11.05.1';
 let editUpdatedAt = null;
+let editingPublicUpdates = [];
+let timelineModified = false;
 // Switch- och topologifunktioner (parseDeviceRole, summarizeDevices, computeSwitchImpact) laddas från /topology.js
 let overdueFirstId = null;
 let reopeningId = null;
@@ -161,6 +164,8 @@ function getForm() {
 
 function resetForm() {
   editUpdatedAt = null;
+  editingPublicUpdates = [];
+  timelineModified = false;
   $('editId').value = '';
   $('alertId').value = '';
   $('alertLinkBanner').classList.add('hidden');
@@ -174,6 +179,11 @@ function resetForm() {
   $('ettr').value = '';
   $('note').value = '';
   $('techDetails').value = '';
+  if ($('tlModeReplace')) $('tlModeReplace').checked = true;
+  if ($('tlModeAppend')) $('tlModeAppend').checked = false;
+  if ($('timelineStepText')) $('timelineStepText').value = '';
+  if ($('tlStepTextWrap')) $('tlStepTextWrap').classList.add('hidden');
+  if ($('editTimelineBox')) $('editTimelineBox').classList.add('hidden');
   if ($('publicTimelineHint')) $('publicTimelineHint').classList.add('hidden');
   $('formTitle').textContent = 'Ny händelse';
   try { localStorage.removeItem('draft'); } catch {}
@@ -260,6 +270,45 @@ function useAlertInForm(alertId) {
   useAlertGroupInForm([alertId]);
 }
 
+function syncTimelineModeUI() {
+  const isAppend = Boolean($('tlModeAppend')?.checked);
+  if ($('tlStepTextWrap')) {
+    $('tlStepTextWrap').classList.toggle('hidden', !isAppend);
+  }
+}
+
+function renderEditTimelineList() {
+  const tlHint = $('publicTimelineHint');
+  const tlList = $('publicTimelineList');
+  const tlSum = $('publicTimelineSummary');
+  if (!tlHint || !tlList || !tlSum) return;
+  if (!editingPublicUpdates.length) {
+    tlHint.classList.add('hidden');
+    return;
+  }
+  const hasMultiple = editingPublicUpdates.length > 1;
+  tlSum.textContent = hasMultiple
+    ? `🕒 Publik tidslinje på portalen (${editingPublicUpdates.length} steg – visas publikt)`
+    : '🕒 Publik tidslinje (endast 1 steg – ingen tidslinje visas på portalen)';
+  const items = editingPublicUpdates
+    .map((u, origIdx) => ({ u, origIdx }))
+    .reverse()
+    .map(({ u, origIdx }, revIdx) => `
+      <li class="space-y-1 pb-1.5 border-b border-line/60 last:border-b-0">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span class="font-mono text-accent">${esc(u.ts)}</span>
+            ${revIdx === 0 ? '<span class="ml-1 px-1 py-0.5 rounded bg-brand/20 text-accent text-[10px]">Senaste</span>' : ''}
+            ${u.ettr ? ` <span class="text-faint">(Prognos: ${esc(u.ettr)})</span>` : ''}
+          </div>
+          ${hasMultiple ? `<button type="button" data-del-tl-idx="${origIdx}" class="text-[10px] text-danger hover:underline font-semibold" title="Ta bort detta steg ur tidslinjen">&times; Ta bort steg</button>` : ''}
+        </div>
+        <input type="text" data-edit-tl-idx="${origIdx}" value="${esc(u.text)}" class="field text-xs !py-1 !px-2 w-full" title="Redigera text för detta tidslinjesteg">
+      </li>`);
+  tlList.innerHTML = items.join('');
+  tlHint.classList.remove('hidden');
+}
+
 function editIncident(inc) {
   if (!inc) return;
   editUpdatedAt = inc.updatedAt || inc.createdAt || null;
@@ -272,19 +321,21 @@ function editIncident(inc) {
     $('alertLinkBanner').classList.add('hidden');
   }
   setFields({ ...inc, domain: inc.domain || 'stadsnat', scope: inc.scope || '', startDate: inc.startDate || (inc.createdAt || '').slice(0, 10) || todayISO(), ettrDate: inc.ettrDate || '', note: '' });
-  const tlHint = $('publicTimelineHint');
-  if (tlHint) {
-    const pubUpd = Array.isArray(inc.publicUpdates) ? inc.publicUpdates : [];
-    if (pubUpd.length > 0) {
-      $('publicTimelineSummary').textContent = `🕒 Publik tidslinje på portalen (${pubUpd.length} st) – ny Lägesrapport/Klartid lägger till ett steg`;
-      $('publicTimelineList').innerHTML = pubUpd.slice().reverse().map((u, idx) =>
-        `<li><span class="font-mono text-accent">${esc(u.ts)}</span> ${idx === 0 ? '<span class="px-1 py-0.5 rounded bg-brand/20 text-accent text-[10px]">Senaste</span>' : ''}${u.ettr ? ` <span class="text-faint">(Prognos: ${esc(u.ettr)})</span>` : ''}<div class="text-fg2">${esc(u.text)}</div></li>`
-      ).join('');
-      tlHint.classList.remove('hidden');
-    } else {
-      tlHint.classList.add('hidden');
-    }
-  }
+  editingPublicUpdates = Array.isArray(inc.publicUpdates) && inc.publicUpdates.length
+    ? inc.publicUpdates.map((u) => ({ ...u }))
+    : [{
+      ts: startOf(inc),
+      status: inc.statusType || 'Pågående Störning',
+      ettr: endOf(inc) || inc.ettr || '',
+      text: inc.techDetails || '',
+    }];
+  timelineModified = false;
+  if ($('tlModeReplace')) $('tlModeReplace').checked = true;
+  if ($('tlModeAppend')) $('tlModeAppend').checked = false;
+  if ($('timelineStepText')) $('timelineStepText').value = '';
+  syncTimelineModeUI();
+  if ($('editTimelineBox')) $('editTimelineBox').classList.remove('hidden');
+  renderEditTimelineList();
   $('formTitle').textContent = `Redigerar: ${inc.area}`;
   validate();
   generate();
@@ -409,12 +460,20 @@ function timeline(inc) {
 async function fetchIncidents() {
   const box = $('activeIncidentsList');
   try {
-    const res = await fetch('/api/incidents');
+    const res = await fetch('/api/poll');
     if (!res.ok) throw new Error(res.status);
-    incidents = await res.json();
+    const data = await res.json();
+    if (Array.isArray(data.incidents)) incidents = data.incidents;
+    if (Array.isArray(data.recentlyResolved)) recentlyResolved = data.recentlyResolved;
   } catch (e) {
-    if (box) box.innerHTML = '<p class="text-xs text-danger">Kunde inte hämta ärenden.</p>';
-    return;
+    try {
+      const res2 = await fetch('/api/incidents');
+      if (!res2.ok) throw new Error(res2.status);
+      incidents = await res2.json();
+    } catch {
+      if (box) box.innerHTML = '<p class="text-xs text-danger">Kunde inte hämta ärenden.</p>';
+      return;
+    }
   }
   renderIncidents();
 }
@@ -437,8 +496,8 @@ function renderIncidents() {
       overdueFirstId = null;
     }
   }
-  if (!incidents.length) {
-    box.innerHTML = '<p class="text-xs text-faint italic">Inga aktiva ärenden just nu.</p>';
+  if (!incidents.length && !recentlyResolved.length) {
+    box.innerHTML = '<p class="text-xs text-faint italic">Inga aktiva eller nyligen avslutade ärenden på driftportalen just nu.</p>';
     return;
   }
 
@@ -492,13 +551,36 @@ function renderIncidents() {
           <button data-hist="${esc(inc.id)}" class="btn">Historik</button>
           <button data-edit="${esc(inc.id)}" class="btn">Redigera</button>
           <button data-close="${esc(inc.id)}" class="${over ? 'bg-amber-600 hover:bg-amber-700 text-white font-semibold px-3 py-1.5 rounded-lg text-xs' : nmsOk ? 'bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-3 py-1.5 rounded-lg text-xs' : 'btn-danger'}">Stäng ärende</button>
+          <button data-del-inc="${esc(inc.id)}" class="btn text-danger" title="Radera ärendet direkt utan att det hamnar i arkivet eller under nyligen åtgärdade">Ta bort</button>
         </div>
       </div>
       <div id="h-${esc(inc.id)}" class="${openHist.has(inc.id) ? '' : 'hidden'}">${timeline(inc)}</div>
     </div>`;
   };
-  const part = (title, list) => (list.length ? `<h3 class="text-[10px] uppercase tracking-wider font-semibold text-faint pt-1">${title} (${list.length})</h3>${list.map(row).join('')}` : '');
-  box.innerHTML = part('Pågående störningar', incidents.filter((i) => i.kind !== 'planned')) + part('Planerade arbeten', incidents.filter((i) => i.kind === 'planned'));
+
+  const resolvedRow = (inc) => `
+    <div class="bg-inset border border-emerald-500/30 p-3 rounded-xl text-xs transition">
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-bold text-fg">${icon(inc)} ${esc(inc.area)}</span> &mdash; <span class="text-muted">${esc(inc.faultType)}</span>
+            <span class="inline-block bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold px-2 py-0.5 rounded text-[10px]">✅ Visas under Nyligen åtgärdade (24h)</span>
+          </div>
+          <div class="text-[10px] text-faint truncate">${esc(startOf(inc))} &rarr; ${esc(inc.endedAt || '?')} | ${esc(inc.services)}</div>
+        </div>
+        <div class="flex flex-wrap justify-end gap-2 shrink-0">
+          <button data-rep="${esc(inc.id)}" class="btn">📄 Rapport</button>
+          <button data-reopen="${esc(inc.id)}" class="btn text-amber-600 dark:text-amber-400">↺ Återöppna</button>
+          <button data-del-arc="${esc(inc.id)}" class="btn text-danger" title="Ta bort detta avslutade ärende från driftportalen (24h) och arkivet">Ta bort</button>
+        </div>
+      </div>
+    </div>`;
+
+  const part = (title, list, fn = row) => (list.length ? `<h3 class="text-[10px] uppercase tracking-wider font-semibold text-faint pt-1">${title} (${list.length})</h3>${list.map(fn).join('')}` : '');
+  box.innerHTML =
+    part('Pågående störningar', incidents.filter((i) => i.kind !== 'planned'))
+    + part('Planerade arbeten', incidents.filter((i) => i.kind === 'planned'))
+    + part('Nyligen åtgärdade – visas på portalen i 24h', recentlyResolved, resolvedRow);
 }
 
 // ---------- FrameFlow Larminkorg ----------
@@ -660,6 +742,7 @@ async function simulateAlert(type) {
 function renderArchiveList() {
   const box = $('archiveList');
   if (!box) return;
+  const recentIds = new Set(recentlyResolved.map((r) => r.id));
   const q = ($('archiveSearch')?.value || '').trim().toLowerCase();
   const filtered = q
     ? archive.filter((inc) =>
@@ -674,12 +757,14 @@ function renderArchiveList() {
   $('archiveCount').textContent = q ? `– visar ${filtered.length} av ${archive.length} st` : `– ${archive.length} st`;
   box.innerHTML = filtered.length ? filtered.map((inc) => {
     const isSig = inc.nis2?.significant === 'yes';
+    const isRecent24h = recentIds.has(inc.id);
     const authRef = inc.nis2?.authorityRef ? ` | Diarienr: ${esc(inc.nis2.authorityRef)}` : '';
     return `
     <div class="bg-inset border border-line p-3 rounded-xl text-xs">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <span class="font-bold text-fg">${icon(inc)} ${esc(inc.area)}</span> &mdash; <span class="text-muted">${esc(inc.faultType)}</span>
+          ${isRecent24h ? '<span class="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">🟢 Visas på portalen (24h)</span>' : ''}
           ${isSig ? '<span class="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-500/15 text-red-500 border border-red-500/30">⚠️ Betydande NIS2</span>' : ''}
           <div class="text-[10px] text-faint">${esc(startOf(inc))} &rarr; ${esc(inc.endedAt || '?')}${inc.closedBy ? ` | stängt av ${esc(inc.closedBy)}` : ''}${authRef}</div>
         </div>
@@ -688,11 +773,45 @@ function renderArchiveList() {
           <button data-rep="${esc(inc.id)}" class="btn">📄 Rapport</button>
           <button data-reopen="${esc(inc.id)}" class="btn text-amber-600 dark:text-amber-400">↺ Återöppna</button>
           <button data-hist="a-${esc(inc.id)}" class="btn">Historik</button>
+          <button data-del-arc="${esc(inc.id)}" class="btn text-danger" title="Ta bort detta avslutade ärende permanent ur arkivet och från portalen">Ta bort</button>
         </div>
       </div>
       <div id="h-a-${esc(inc.id)}" class="${openHist.has('a-' + inc.id) ? '' : 'hidden'}">${timeline(inc)}</div>
     </div>`;
   }).join('') : `<p class="text-xs text-faint italic">${q ? 'Inga stängda ärenden matchade din sökning.' : 'Arkivet är tomt.'}</p>`;
+}
+
+async function deleteActiveIncident(id) {
+  const inc = incidents.find((i) => i.id === id);
+  const label = inc ? `${inc.area} – ${inc.faultType}` : id;
+  if (!confirm(`Vill du ta bort det pågående ärendet "${label}" permanent?\n\nÄrendet raderas direkt från driftportalen utan att arkiveras eller visas under nyligen åtgärdade.`)) {
+    return;
+  }
+  try {
+    await api('/api/incidents/delete', { id });
+    if ($('editId').value === id) resetForm();
+    toast('Det pågående ärendet har tagits bort.');
+    await fetchIncidents();
+    await fetchAlerts();
+  } catch (e) {
+    toast(`Kunde inte ta bort ärende: ${e.message}`, false);
+  }
+}
+
+async function deleteArchivedIncident(id) {
+  const inc = archive.find((i) => i.id === id) || recentlyResolved.find((i) => i.id === id);
+  const label = inc ? `${inc.area} – ${inc.faultType}` : id;
+  if (!confirm(`Vill du ta bort det avslutade ärendet "${label}" permanent?\n\nÄrendet tas bort ur arkivet, försvinner direkt från "Nyligen åtgärdade händelser (senaste 24 timmarna)" på driftportalen och tillhörande rapportfil raderas.`)) {
+    return;
+  }
+  try {
+    await api('/api/archive/delete', { id });
+    toast('Det avslutade ärendet har tagits bort från arkivet och driftportalen.');
+    await fetchIncidents();
+    if ($('archiveBox')?.open) await fetchArchive();
+  } catch (e) {
+    toast(`Kunde inte ta bort arkiverat ärende: ${e.message}`, false);
+  }
 }
 
 async function fetchArchive() {
@@ -711,8 +830,12 @@ async function fetchArchive() {
 $('activeIncidentsList').addEventListener('click', (e) => {
   const ed = e.target.closest('[data-edit]');
   const cl = e.target.closest('[data-close]');
+  const dlInc = e.target.closest('[data-del-inc]');
+  const dlArc = e.target.closest('[data-del-arc]');
   if (ed) editIncident(incidents.find((i) => i.id === ed.dataset.edit));
   if (cl) closeIncident(cl.dataset.close);
+  if (dlInc) deleteActiveIncident(dlInc.dataset.delInc);
+  if (dlArc) deleteArchivedIncident(dlArc.dataset.delArc);
 });
 
 $('alertsList').addEventListener('click', (e) => {
@@ -739,7 +862,18 @@ async function publish() {
   try {
     const rawAlertId = $('alertId').value || '';
     const alertIds = rawAlertId.split(',').map((s) => s.trim()).filter(Boolean);
-    const payload = { ...f, id: $('editId').value || null, alertId: alertIds[0] || '', alertIds };
+    const isEditing = Boolean($('editId').value);
+    const timelineMode = isEditing && $('tlModeAppend')?.checked ? 'append' : (isEditing ? 'replace' : 'append');
+    const timelineStepText = isEditing && timelineMode === 'append' ? ($('timelineStepText')?.value || '').trim() : '';
+    const payload = {
+      ...f,
+      id: $('editId').value || null,
+      alertId: alertIds[0] || '',
+      alertIds,
+      ...(isEditing && { timelineMode }),
+      ...(timelineStepText && { timelineStepText }),
+      ...(isEditing && timelineModified && { customPublicUpdates: editingPublicUpdates }),
+    };
     if (editUpdatedAt) payload.expectedUpdatedAt = editUpdatedAt;
     const res = await api('/api/publish', payload);
     editUpdatedAt = res.updatedAt || null;
@@ -1471,6 +1605,8 @@ const AUDIT_LABELS = {
   update: ['Ärende uppdaterat', 'bg-brand/15 text-accent'],
   close: ['Ärende avslutat & arkiverat', 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'],
   reopen: ['Ärende återöppnat', 'bg-amber-500/15 text-amber-600 dark:text-amber-400'],
+  delete_incident: ['Pågående ärende raderat', 'bg-red-500/15 text-red-600 dark:text-red-400'],
+  delete_archive: ['Avslutat ärende raderat ur arkiv', 'bg-red-500/15 text-red-600 dark:text-red-400'],
   nis2_update: ['NIS2-komplettering i arkiv', 'bg-sky-500/15 text-sky-600 dark:text-sky-400'],
   auto_archive_planned: ['Planerat arbete auto-arkiverat', 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'],
   user_added: ['Användare skapad', 'bg-brand/15 text-accent'],
@@ -1724,6 +1860,21 @@ document.addEventListener('click', (e) => {
     openReopenDialog(ro.dataset.reopen);
     return;
   }
+  const delArc = e.target.closest('[data-del-arc]');
+  if (delArc && !e.target.closest('#activeIncidentsList')) {
+    deleteArchivedIncident(delArc.dataset.delArc);
+    return;
+  }
+  const delTl = e.target.closest('[data-del-tl-idx]');
+  if (delTl) {
+    const idx = Number(delTl.dataset.delTlIdx);
+    if (!Number.isNaN(idx) && editingPublicUpdates.length > 1) {
+      editingPublicUpdates.splice(idx, 1);
+      timelineModified = true;
+      renderEditTimelineList();
+    }
+    return;
+  }
   const hb = e.target.closest('[data-hist]');
   if (hb) {
     const id = hb.dataset.hist;
@@ -1808,6 +1959,17 @@ $('archiveSearch')?.addEventListener('input', () => renderArchiveList());
 $('restoreBackupFile')?.addEventListener('change', previewRestoreFile);
 $('auditSearch')?.addEventListener('input', () => loadAuditLog());
 $('auditCategory')?.addEventListener('change', () => loadAuditLog());
+$('tlModeReplace')?.addEventListener('change', syncTimelineModeUI);
+$('tlModeAppend')?.addEventListener('change', syncTimelineModeUI);
+$('publicTimelineList')?.addEventListener('input', (e) => {
+  const inp = e.target.closest('[data-edit-tl-idx]');
+  if (!inp) return;
+  const idx = Number(inp.dataset.editTlIdx);
+  if (!Number.isNaN(idx) && editingPublicUpdates[idx]) {
+    editingPublicUpdates[idx].text = inp.value;
+    timelineModified = true;
+  }
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('docModal').classList.contains('hidden')) toggleModal();
@@ -1885,6 +2047,9 @@ async function pollAdminState() {
     if (Array.isArray(data.alerts)) {
       alerts = data.alerts;
       renderAlerts();
+    }
+    if (Array.isArray(data.recentlyResolved)) {
+      recentlyResolved = data.recentlyResolved;
     }
     if (Array.isArray(data.incidents)) {
       incidents = data.incidents;

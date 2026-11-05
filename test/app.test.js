@@ -974,3 +974,142 @@ test('15. Smart hantering av FrameFlow switch-larm (1 acc, 10 acc, 1 dist, flera
   const activeAfter60 = await (await fetch(`${baseUrl}/api/alerts`, { headers: adminHeaders })).json();
   assert.ok(activeAfter60.length >= 60, `Förväntade minst 60 aktiva larm i inkorgen, fick ${activeAfter60.length}`);
 });
+
+test('16. Radera pågående/avslutade ärenden samt redigera Lägesrapport med och utan nytt tidslinjesteg', async () => {
+  const adminLogin = await fetch(`${baseUrl}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+    body: JSON.stringify({ username: 'testadmin', password: 'testpassword12345' }),
+  });
+  assert.equal(adminLogin.status, 200);
+  const adminCookie = (adminLogin.headers.get('set-cookie') || '').split(';')[0];
+  const adminHeaders = {
+    'Content-Type': 'application/json',
+    Origin: baseUrl,
+    Cookie: adminCookie,
+  };
+
+  // 1. Skapa ett pågående ärende
+  const createRes = await fetch(`${baseUrl}/api/publish`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      id: 'edit-tl-test-1',
+      domain: 'fjarrvarme',
+      statusType: 'Pågående Störning',
+      area: 'Backsveden',
+      faultType: 'Ledningsbrott',
+      services: 'Värme, Varmvatten',
+      startDate: '2026-11-05',
+      startTime: '23:50',
+      techDetails: 'Läckage på Backsveden.',
+    }),
+  });
+  assert.equal(createRes.status, 200);
+
+  // 2. Ändra Lägesrapport med timelineMode: 'replace' -> ska INTE skapa tidslinje (längd 1)
+  const replaceRes = await fetch(`${baseUrl}/api/publish`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      id: 'edit-tl-test-1',
+      domain: 'fjarrvarme',
+      statusType: 'Pågående Störning',
+      area: 'Bollnäs ren backsveden',
+      faultType: 'Ledningsbrott',
+      services: 'Värme, Varmvatten',
+      startDate: '2026-11-05',
+      startTime: '23:50',
+      techDetails: 'Läckage på Backsveden i Bollnäs. Tekniker på plats.',
+      timelineMode: 'replace',
+    }),
+  });
+  assert.equal(replaceRes.status, 200);
+
+  let list = await (await fetch(`${baseUrl}/api/incidents`, { headers: adminHeaders })).json();
+  let inc = list.find((i) => i.id === 'edit-tl-test-1');
+  assert.equal(inc.techDetails, 'Läckage på Backsveden i Bollnäs. Tekniker på plats.');
+  assert.equal(inc.publicUpdates.length, 1);
+  assert.equal(inc.publicUpdates[0].text, 'Läckage på Backsveden i Bollnäs. Tekniker på plats.');
+
+  // 3. Lägg till nytt steg i tidslinjen med timelineMode: 'append' och timelineStepText
+  const appendRes = await fetch(`${baseUrl}/api/publish`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      id: 'edit-tl-test-1',
+      domain: 'fjarrvarme',
+      statusType: 'Uppdaterad Prognos / Info',
+      area: 'Bollnäs ren backsveden',
+      faultType: 'Ledningsbrott',
+      services: 'Värme, Varmvatten',
+      startDate: '2026-11-05',
+      startTime: '23:50',
+      techDetails: 'Läckage på Backsveden i Bollnäs. Schaktning pågår.',
+      timelineMode: 'append',
+      timelineStepText: 'Schaktmaskin på plats, grävning påbörjad.',
+    }),
+  });
+  assert.equal(appendRes.status, 200);
+
+  list = await (await fetch(`${baseUrl}/api/incidents`, { headers: adminHeaders })).json();
+  inc = list.find((i) => i.id === 'edit-tl-test-1');
+  assert.equal(inc.techDetails, 'Läckage på Backsveden i Bollnäs. Schaktning pågår.');
+  assert.equal(inc.publicUpdates.length, 2);
+  assert.equal(inc.publicUpdates[1].text, 'Schaktmaskin på plats, grävning påbörjad.');
+
+  // 4. Radera pågående ärende direkt (utan att det hamnar i arkivet)
+  const delActiveRes = await fetch(`${baseUrl}/api/incidents/delete`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({ id: 'edit-tl-test-1' }),
+  });
+  assert.equal(delActiveRes.status, 200);
+  list = await (await fetch(`${baseUrl}/api/incidents`, { headers: adminHeaders })).json();
+  assert.equal(list.some((i) => i.id === 'edit-tl-test-1'), false);
+  let archList = await (await fetch(`${baseUrl}/api/archive`, { headers: adminHeaders })).json();
+  assert.equal(archList.some((i) => i.id === 'edit-tl-test-1'), false);
+
+  // 5. Skapa, stäng och radera ett avslutat ärende ur arkivet & 24h-listan
+  await fetch(`${baseUrl}/api/publish`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      id: 'wrong-closed-1',
+      domain: 'fjarrvarme',
+      statusType: 'Pågående Störning',
+      area: 'Ren Backsveden',
+      faultType: 'Ledningsbrott',
+      services: 'Värme, Varmvatten',
+      startDate: '2026-11-05',
+      startTime: '23:54',
+      techDetails: 'Felaktigt skapat ärende.',
+    }),
+  });
+  await fetch(`${baseUrl}/api/close`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      id: 'wrong-closed-1',
+      endDate: '2026-11-05',
+      endTime: '23:56',
+      note: 'Stängd av misstag',
+    }),
+  });
+
+  let pollData = await (await fetch(`${baseUrl}/api/poll`, { headers: adminHeaders })).json();
+  assert.equal(pollData.recentlyResolved.some((r) => r.id === 'wrong-closed-1'), true);
+
+  const delArchRes = await fetch(`${baseUrl}/api/archive/delete`, {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({ id: 'wrong-closed-1' }),
+  });
+  assert.equal(delArchRes.status, 200);
+
+  pollData = await (await fetch(`${baseUrl}/api/poll`, { headers: adminHeaders })).json();
+  assert.equal(pollData.recentlyResolved.some((r) => r.id === 'wrong-closed-1'), false);
+  archList = await (await fetch(`${baseUrl}/api/archive`, { headers: adminHeaders })).json();
+  assert.equal(archList.some((i) => i.id === 'wrong-closed-1'), false);
+  assert.equal(fs.existsSync(path.join(tmpDir, 'rapporter', 'incident-wrong-closed-1.md')), false);
+});

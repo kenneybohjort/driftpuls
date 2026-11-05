@@ -11,7 +11,7 @@ const PUBLIC_URL = process.env.PUBLIC_URL || '';
 const PORTAL_PORT = Number(process.env.PORTAL_PORT) || 3001;
 const ADMIN_USER = process.env.ADMIN_USER; // används bara för att skapa första kontot
 const ADMIN_PASS = process.env.ADMIN_PASS;
-const APP_VERSION = '2026.11.02.2'; // höj vid varje ändring: visas i sidans fot så man ser om server och sida är i takt
+const APP_VERSION = '2026.11.05.1'; // höj vid varje ändring: visas i sidans fot så man ser om server och sida är i takt
 const dataFile = path.join(DATA_DIR, 'storingar.json');
 const archiveFile = path.join(DATA_DIR, 'arkiv.jsonl'); // stängda ärenden (driftlogg)
 const auditFile = path.join(DATA_DIR, 'audit.jsonl'); // beständig revisionslogg
@@ -353,11 +353,15 @@ const startKey = (i) => `${i.startDate || (i.createdAt || '').slice(0, 10) || '0
 const endKey = (i) => (i.ettrDate && isTime(i.ettr || '') ? `${i.ettrDate} ${i.ettr}` : '');
 
 // Bygger den publika tidslinjen för ett ärende (läser aldrig in interna anteckningar `note`)
-function buildPublicUpdates(prev, data, tsLocal = nowLocal()) {
+function buildPublicUpdates(prev, data, tsLocal = nowLocal(), opts = {}) {
+  const mode = (opts.timelineMode === 'replace' || opts.addTimelineStep === false) ? 'replace' : 'append';
+  const clearTimeline = Boolean(opts.clearTimeline);
+  const customStepText = text(opts.timelineStepText, 1000);
   const fmtEttr = (d) => (d.ettrDate && isTime(d.ettr || '') ? `${d.ettrDate} ${d.ettr}` : (d.ettr || ''));
   const defaultText = (d) => d.techDetails || (d.kind === 'planned' ? 'Planerat arbete inlagt.' : 'Felsökning pågår.');
-  if (!prev) {
-    const startTs = `${data.startDate || todayLocal()} ${data.startTime || tsLocal.slice(11)}`;
+  const startTs = `${data.startDate || todayLocal()} ${data.startTime || tsLocal.slice(11)}`;
+
+  if (!prev || clearTimeline) {
     return [{
       ts: startTs,
       status: data.statusType || 'Pågående Störning',
@@ -365,23 +369,62 @@ function buildPublicUpdates(prev, data, tsLocal = nowLocal()) {
       text: defaultText(data),
     }];
   }
-  const list = Array.isArray(prev.publicUpdates) && prev.publicUpdates.length
-    ? [...prev.publicUpdates]
-    : [{
-      ts: startKey(prev),
-      status: prev.statusType || 'Pågående Störning',
-      ettr: fmtEttr(prev),
-      text: defaultText(prev),
-    }];
 
-  const techChanged = (prev.techDetails || '') !== (data.techDetails || '');
-  const ettrChanged = fmtEttr(prev) !== fmtEttr(data);
-  const statusChanged = (prev.statusType || '') !== (data.statusType || '');
-  if (!techChanged && !ettrChanged && !statusChanged) return list;
+  let list;
+  if (Array.isArray(opts.customPublicUpdates) && opts.customPublicUpdates.length > 0) {
+    list = opts.customPublicUpdates
+      .filter((u) => u && typeof u === 'object')
+      .map((u) => ({
+        ts: text(u.ts, 25) || startKey(prev),
+        status: text(u.status, 40) || 'Pågående Störning',
+        ettr: text(u.ettr, 30),
+        text: text(u.text, 1000),
+      }))
+      .filter((u) => u.text);
+  }
+  if (!list || !list.length) {
+    list = Array.isArray(prev.publicUpdates) && prev.publicUpdates.length
+      ? prev.publicUpdates.map((u) => ({ ...u }))
+      : [{
+        ts: startKey(prev),
+        status: prev.statusType || 'Pågående Störning',
+        ettr: fmtEttr(prev),
+        text: defaultText(prev),
+      }];
+  }
 
   const newEttr = fmtEttr(data);
-  let newText = data.techDetails || '';
-  if (!techChanged && ettrChanged) {
+
+  // Om användaren valt att enbart ändra aktuell lägesrapport (utan nytt steg i tidslinjen)
+  if (mode === 'replace') {
+    if (list.length === 1) {
+      list[0] = {
+        ts: startTs,
+        status: data.statusType || list[0].status || 'Pågående Störning',
+        ettr: newEttr,
+        text: defaultText(data),
+      };
+    } else if (!Array.isArray(opts.customPublicUpdates)) {
+      const lastIdx = list.length - 1;
+      if (list[lastIdx].text === (prev.techDetails || '')) {
+        list[lastIdx] = {
+          ...list[lastIdx],
+          status: data.statusType || list[lastIdx].status,
+          ettr: newEttr,
+          text: defaultText(data),
+        };
+      }
+    }
+    return list.slice(-30);
+  }
+
+  const techChanged = (prev.techDetails || '') !== (data.techDetails || '');
+  const ettrChanged = fmtEttr(prev) !== newEttr;
+  const statusChanged = (prev.statusType || '') !== (data.statusType || '');
+  if (!customStepText && !techChanged && !ettrChanged && !statusChanged) return list;
+
+  let newText = customStepText || data.techDetails || '';
+  if (!customStepText && !techChanged && ettrChanged) {
     newText = data.techDetails
       ? `${data.techDetails}`
       : `Uppdaterad prognos: ${newEttr || 'Ej fastställt'}`;
@@ -390,7 +433,7 @@ function buildPublicUpdates(prev, data, tsLocal = nowLocal()) {
   }
 
   const last = list[list.length - 1];
-  if (last && last.text === newText && last.ettr === newEttr && last.status === data.statusType) {
+  if (!customStepText && last && last.text === newText && last.ettr === newEttr && last.status === data.statusType) {
     return list;
   }
   list.push({
@@ -1681,10 +1724,14 @@ app.get('/api/portal-status', async (req, res) => {
 app.get('/api/poll', async (req, res) => {
   const portalStatus = await getPortalStatus();
   const activeAlerts = loadAlerts().filter((a) => !a.dismissed && !a.linkedIncidentId);
+  const allIncidents = load();
+  const activeIds = new Set(allIncidents.map((i) => i.id));
+  const recentlyResolved = loadRecentlyResolved(24, activeIds);
   res.json({
     success: true,
     version: APP_VERSION,
-    incidents: load(),
+    incidents: allIncidents,
+    recentlyResolved,
     alerts: activeAlerts,
     portalStatus,
   });
@@ -1944,6 +1991,7 @@ const AUDIT_CATEGORIES = {
   ]),
   incidents: new Set([
     'create', 'update', 'close', 'reopen', 'nis2_update', 'auto_archive_planned',
+    'delete_incident', 'delete_archive',
   ]),
   admin: new Set([
     'bootstrap_user', 'user_added', 'user_removed', 'user_password_reset',
@@ -2141,6 +2189,7 @@ app.post('/api/backup/restore', authz.requireAdmin, (req, res) => {
     const tmp = `${archiveFile}.tmp`;
     fs.writeFileSync(tmp, validArchive.map((r) => JSON.stringify(r)).join('\n') + (validArchive.length ? '\n' : ''));
     fs.renameSync(tmp, archiveFile);
+    archiveCache = { mtimeMs: -1, rows: [] };
     restored.archive = validArchive.length;
 
     // Återskapa Markdown-rapporter för alla arkiverade ärenden
@@ -2394,7 +2443,14 @@ app.post('/api/publish', (req, res) => {
   }
 
   const changes = diff(prev, data);
-  const publicUpdates = buildPublicUpdates(prev, data, nowLocal());
+  const timelineOpts = {
+    timelineMode: req.body?.timelineMode,
+    addTimelineStep: req.body?.addTimelineStep,
+    clearTimeline: Boolean(req.body?.clearTimeline),
+    timelineStepText: req.body?.timelineStepText,
+    customPublicUpdates: Array.isArray(req.body?.customPublicUpdates) ? req.body.customPublicUpdates : null,
+  };
+  const publicUpdates = buildPublicUpdates(prev, data, nowLocal(), timelineOpts);
   const entry = { ts: now, by: req.adminUser, action: prev ? 'update' : 'create', status: data.statusType, ...(note && { note }), ...(prev && { changes }) };
   // Ingen ny historikrad om inget ändrats och ingen anteckning skrivits
   const history = [...(prev?.history || []), ...(!prev || Object.keys(changes).length || note ? [entry] : [])].slice(-200);
@@ -2446,6 +2502,7 @@ app.post('/api/close', (req, res) => {
   const closedRecord = { ...inc, history, endedAt, closedAt, closedBy: req.adminUser, ...(note && { resolution: note }), nis2 };
   try {
     fs.appendFileSync(archiveFile, JSON.stringify(closedRecord) + '\n');
+    archiveCache = { mtimeMs: -1, rows: [] };
   } catch (e) {
     console.error('Arkivering misslyckades', e);
     return bad(500, 'Kunde inte arkivera. Ärendet är inte stängt.'); // radera aldrig utan arkivkopia
@@ -2509,6 +2566,7 @@ app.post('/api/reopen', (req, res) => {
     const tmp = `${archiveFile}.tmp`;
     fs.writeFileSync(tmp, rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''));
     fs.renameSync(tmp, archiveFile);
+    archiveCache = { mtimeMs: -1, rows: [] };
   } catch (err) {
     console.error('Kunde inte uppdatera arkivfilen vid återöppning:', err);
     return bad(500, 'Kunde inte uppdatera arkivet.');
@@ -2591,6 +2649,7 @@ app.post('/api/archive/update-nis2', (req, res) => {
     const tmp = `${archiveFile}.tmp`;
     fs.writeFileSync(tmp, rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''));
     fs.renameSync(tmp, archiveFile);
+    archiveCache = { mtimeMs: -1, rows: [] };
   } catch (err) {
     console.error('Kunde inte spara kompletterad NIS2-post:', err);
     return bad(500, 'Kunde inte uppdatera arkivfilen.');
@@ -2612,6 +2671,69 @@ app.post('/api/archive/update-nis2', (req, res) => {
   });
 
   res.json({ success: true, id, incident: updatedRecord, report });
+});
+
+app.post('/api/incidents/delete', (req, res) => {
+  const bad = (code, error) => res.status(code).json({ success: false, error });
+  const id = String(req.body?.id ?? '');
+  if (!/^[\w-]{1,40}$/.test(id)) return bad(400, 'Ogiltigt ärende-ID.');
+  const all = load();
+  const inc = all.find((i) => i.id === id);
+  if (!inc) return bad(404, 'Ärendet hittades inte (redan raderat eller stängt?).');
+
+  const alerts = loadAlerts();
+  let alertsChanged = false;
+  for (const a of alerts) {
+    if (a.linkedIncidentId === id) {
+      a.linkedIncidentId = null;
+      alertsChanged = true;
+    }
+  }
+  if (alertsChanged) saveAlerts(alerts);
+
+  const remaining = all.filter((i) => i.id !== id);
+  save(remaining);
+  invalidate();
+  audit('delete_incident', { id, area: inc.area, faultType: inc.faultType, by: req.adminUser });
+  res.json({ success: true, id, count: remaining.length });
+});
+
+app.post('/api/archive/delete', (req, res) => {
+  const bad = (code, error) => res.status(code).json({ success: false, error });
+  const id = String(req.body?.id ?? '');
+  if (!/^[\w-]{1,40}$/.test(id)) return bad(400, 'Ogiltigt ärende-ID.');
+
+  let rows = [];
+  try {
+    if (fs.existsSync(archiveFile)) {
+      rows = fs.readFileSync(archiveFile, 'utf8').split('\n').filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    }
+  } catch {
+    return bad(500, 'Kunde inte läsa arkivfilen.');
+  }
+
+  const target = rows.find((i) => i.id === id);
+  if (!target) return bad(404, 'Ärendet hittades inte i arkivet.');
+
+  const remaining = rows.filter((i) => i.id !== id);
+  try {
+    const tmp = `${archiveFile}.tmp`;
+    fs.writeFileSync(tmp, remaining.map((r) => JSON.stringify(r)).join('\n') + (remaining.length ? '\n' : ''));
+    fs.renameSync(tmp, archiveFile);
+    archiveCache = { mtimeMs: -1, rows: [] };
+  } catch (err) {
+    console.error('Kunde inte uppdatera arkivfilen vid radering:', err);
+    return bad(500, 'Kunde inte uppdatera arkivfilen.');
+  }
+
+  try {
+    fs.rmSync(path.join(REPORTS_DIR, `incident-${id}.md`), { force: true });
+  } catch {}
+
+  invalidate();
+  audit('delete_archive', { id, area: target.area, faultType: target.faultType, by: req.adminUser });
+  res.json({ success: true, id, count: remaining.length });
 });
 
 app.get('/api/report/:id/print', (req, res) => {
