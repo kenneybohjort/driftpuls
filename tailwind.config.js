@@ -4,7 +4,15 @@ const v = (n) => `rgb(var(--c-${n}) / <alpha-value>)`; // färgerna definieras i
 module.exports = {
   darkMode: 'class',
   // Tailwind skapar bara de klasser som hittas i dessa filer.
-  content: ['./public/index.html', './public/login.html', './public/admin.js', './public/login.js', './server.js'],
+  content: [
+    './public/index.html',
+    './public/login.html',
+    './public/admin.js',
+    './public/login.js',
+    './public/modules/*.js',
+    './server.js',
+    './lib/*.js',
+  ],
   theme: {
     extend: {
       colors: {

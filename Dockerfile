@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --chown=node:node server.js auth.js users.js ./
+COPY --chown=node:node lib ./lib
 COPY --chown=node:node public ./public
 COPY --chown=node:node test ./test
 USER node

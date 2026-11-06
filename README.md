@@ -22,6 +22,51 @@ Projektet är helt portabelt och körs i två isolerade Docker-containrar:
 
 ---
 
+## Senaste uppdateringar (Versionshistorik)
+
+### `v2026.11.05.2` – Modulär arkitektur (Frontend & Backend)
+- **Utbrytning till fristående moduler:** Den tidigare monolitiska kodbasen (`server.js` och `public/admin.js`) är nu uppdelad i fokuserade moduler under `lib/` (backend) och `public/modules/` (frontend).
+- **Fördelar:** Betydligt enklare underhåll, lägre kontext-/tokenförbrukning vid vidareutveckling och förberett för att koppla på nya moduler och integrationer utan att röra övriga delar av plattformen.
+- **Bibehållen säkerhet & prestanda:** Fortsatt 0 extra npm-beroenden (endast `express`), inget byggsteg för JavaScript och full kompatibilitet med befintlig strikt `Content-Security-Policy (CSP)`.
+
+### `v2026.11.05.1` – Radering av ärenden & flexibel redigering av lägesrapport/tidslinje
+- **Ta bort pågående och avslutade ärenden:**
+  - **Pågående ärenden (`POST /api/incidents/delete`):** Kan nu tas bort direkt från *Aktiva & nyligen åtgärdade ärenden* om ett ärende skapats av misstag, utan att det arkiveras eller hamnar under *Nyligen åtgärdade (24h)*. Eventuella länkade FrameFlow-larm frigörs automatiskt.
+  - **Avslutade ärenden (`POST /api/archive/delete`):** Kan nu raderas permanent både direkt från *Nyligen åtgärdade – visas på portalen i 24h* och inifrån *Arkiv – stängda ärenden & NIS2-rapporter*. Ärendet tas bort ur `data/arkiv.jsonl`, tillhörande NIS2-rapport i `data/rapporter/` raderas och den publika driftportalen uppdateras omedelbart.
+- **Redigera pågående *Lägesrapport* med eller utan ny tidslinje:**
+  - **Ändra enbart i den aktuella Lägesrapporten (standard vid redigering):** Uppdaterar den pågående lägesrapporten på plats (`timelineMode: 'replace'`) utan att skapa ett nytt steg eller en tidslinje på driftportalen.
+  - **Skapa ny lägesuppdatering i tidslinjen:** Lägger till en ny tidsstämplad händelse i tidslinjen (`timelineMode: 'append'`) med möjlighet att ange en egen uppdateringstext samtidigt som huvudtexten i *Lägesrapport* kan behållas eller ändras fritt.
+  - **Direktredigering av befintliga tidslinjesteg:** Alla befintliga steg i ett ärendes publika tidslinje kan nu redigeras inline eller tas bort styckvis.
+
+---
+
+## Arkitektur & Modulstruktur
+
+```text
+driftpuls/
+├── server.js                      # Express-entrypoint, säkerhetsheaders, CSRF & API-routes
+├── auth.js                        # Autentisering, sessioner, RBAC & TOTP (2FA)
+├── users.js                       # CLI-verktyg för användar- och 2FA-hantering
+├── lib/                           # Backend-moduler
+│   ├── store.js                   # Atomisk fillagring, cache, validering, audit-logg & utgående webhooks
+│   ├── nis2.js                    # NIS2 / Cybersäkerhetslagen: rapportmotor (Markdown & utskrifts-HTML)
+│   ├── portal.js                  # Publik driftportal: HTML-rendering, RSS 2.0, status.json & tidslinjer
+│   └── frameflow.js               # FrameFlow NMS-motor (Push-webhook, API-polling & rate-limiting)
+└── public/                        # Frontend (Admin-GUI & delad topologilogik)
+    ├── index.html                 # Admin-gränssnittets vy och dialoger
+    ├── topology.js                # Switch-topologi & beräkning av kundpåverkan (delas med backend)
+    ├── admin.js                   # Huvudskript: event-delegation & uppstart
+    └── modules/                   # Frontend-moduler
+        ├── core.js                # Delat tillstånd, tidshjälpare, API-klient, tema & portalstatus
+        ├── channels.js            # Genererade kanaler (SMS, Webb, Sociala Medier & Intern rapport)
+        ├── incident-form.js       # Ny händelse, redigering, utkast & hantering av publik tidslinje
+        ├── incidents-archive.js   # Aktiva & stängda ärenden, radering, återöppning & NIS2-dialoger
+        ├── alerts.js              # FrameFlow larminkorg, klustergruppering & larmsimulering
+        └── settings.js            # Integrationer, nodregister, användare/2FA, revisionslogg & backup
+```
+
+---
+
 ## Installation & Uppstart på en ny server
 
 ### 1. Förkrav på servern
